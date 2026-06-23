@@ -391,7 +391,7 @@ async function loginWithKey(key) {
   if (loginPending) return;
   const enteredKey = String(key || "");
   let localAdmin = profiles.find((item) => item.role === "admin" && item.active !== false);
-  if (enteredKey === "admin") {
+  if (enteredKey === "admin" && !canUseCloudEndpoint()) {
     const keyHash = await hashProfileKey(enteredKey);
     if (!localAdmin) {
       localAdmin = {
@@ -938,6 +938,9 @@ async function initializeGoogleSheetsSync() {
   const config = googleSheetsConfig();
   if (!canUseCloudEndpoint(config) || (!config.syncKey && !sessionCredentialHash)) {
     cloudReady = true;
+    cloudStatus = canUseCloudEndpoint(config)
+      ? { state: "error", message: "Google Sheets je na voljo, vendar prijava še ni veljavna." }
+      : { state: "local", message: "Google Sheets povezava ni nastavljena na tej napravi." };
     return;
   }
   cloudStatus = { state: "pending", message: "Povezujem Google Sheets ..." };
@@ -949,7 +952,8 @@ async function initializeGoogleSheetsSync() {
     const loaded = await pullGoogleSheets({ quiet: true });
     cloudReady = true;
     if (loaded === false) await pushGoogleSheets({ quiet: true });
-  } catch {
+  } catch (error) {
+    cloudStatus = { state: "error", message: error.message || "Začetna sinhronizacija z Google Sheets ni uspela." };
     cloudReady = true;
     render();
   }
