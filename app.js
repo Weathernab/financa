@@ -436,7 +436,7 @@ async function loginWithKey(key) {
     if (!profile) {
       const result = await Promise.race([
         remoteProfileLogin(keyHash),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Prijava se ni odzvala.")), 5000)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Prijava se ni odzvala v 20 sekundah. Preveri povezavo in poskusi znova.")), 20000)),
       ]);
       profile = result.profile;
       profiles = [...profiles.filter((item) => item.id !== profile.id), { ...profile, keyHash }];
