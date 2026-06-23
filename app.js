@@ -746,6 +746,11 @@ function cloudPayload() {
   return JSON.stringify(data);
 }
 
+function hasMeaningfulFinancialData(data = state) {
+  const collections = ["incomes", "expenses", "transactions", "accounts", "investments", "liabilities", "taxes", "goals", "snapshots", "monthlyNotes", "importHistory", "categoryRules"];
+  return collections.some((key) => Array.isArray(data?.[key]) && data[key].length > 0);
+}
+
 function hasValidSyncKey(config = googleSheetsConfig()) {
   return Boolean(config.syncKey)
     && !String(config.syncKey).includes("TUKAJ_VNESI")
@@ -914,6 +919,12 @@ async function pullGoogleSheets({ confirmOverwrite = false, quiet = false } = {}
 
 async function pushGoogleSheets({ confirmOverwrite = false, quiet = false } = {}) {
   if (confirmOverwrite && !confirm("Podatke iz te naprave pošljem v Google Sheets in prepišem tamkajšnje stanje?")) return false;
+  if (!confirmOverwrite && !hasMeaningfulFinancialData(state)) {
+    cloudAutoSyncPaused = true;
+    cloudStatus = { state: "error", message: "Varnostno ustavljeno: praznega profila ne pošiljam v Google Sheets. Najprej prenesi podatke iz Sheets ali uporabi ročni izvoz." };
+    render();
+    return false;
+  }
   if (!quiet) cloudAutoSyncPaused = false;
   cloudSyncInFlight = true;
   clearTimeout(cloudSaveTimer);
@@ -968,7 +979,11 @@ async function initializeGoogleSheetsSync() {
     }
     const loaded = await pullGoogleSheets({ quiet: true });
     cloudReady = true;
-    if (loaded === false) await pushGoogleSheets({ quiet: true });
+    if (loaded === false) {
+      cloudAutoSyncPaused = true;
+      cloudStatus = { state: "error", message: "V Google Sheets ni podatkov za ta profil. Samodejno pošiljanje je varnostno ustavljeno." };
+      render();
+    }
   } catch (error) {
     cloudStatus = { state: "error", message: error.message || "Začetna sinhronizacija z Google Sheets ni uspela." };
     cloudReady = true;
@@ -3411,7 +3426,11 @@ function bind() {
       if (currentProfile?.role === "admin") await syncProfileRegistry();
       cloudReady = true;
       const loaded = await pullGoogleSheets({ quiet: true });
-      if (loaded === false) await pushGoogleSheets({ quiet: true });
+      if (loaded === false) {
+        cloudAutoSyncPaused = true;
+        cloudStatus = { state: "error", message: "V Google Sheets ni podatkov za ta profil. Samodejno pošiljanje je varnostno ustavljeno." };
+        render();
+      }
     } catch {
       cloudReady = true;
       render();
