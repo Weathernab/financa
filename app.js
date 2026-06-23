@@ -751,6 +751,16 @@ function hasMeaningfulFinancialData(data = state) {
   return collections.some((key) => Array.isArray(data?.[key]) && data[key].length > 0);
 }
 
+function syncDataSummary(data = state) {
+  return [
+    `${(data.accounts || []).length} računov`,
+    `${(data.expenses || []).length} stroškov`,
+    `${(data.incomes || []).length} prihodkov`,
+    `${(data.investments || []).length} investicij`,
+    `${(data.liabilities || []).length} obveznosti`,
+  ].join(", ");
+}
+
 function hasValidSyncKey(config = googleSheetsConfig()) {
   return Boolean(config.syncKey)
     && !String(config.syncKey).includes("TUKAJ_VNESI")
@@ -893,10 +903,11 @@ async function pullGoogleSheets({ confirmOverwrite = false, quiet = false } = {}
   try {
     const result = await cloudRequest("load");
     if (!result.data) {
-      cloudStatus = { state: "success", message: "Google Sheet je povezan, vendar še nima podatkov." };
+      cloudStatus = { state: "error", message: `Google Sheet je povezan, vendar nima podatkov za profil "${currentProfile?.id || "neznan"}".` };
       return false;
     }
-    state = importedState(result.data);
+    const imported = importedState(result.data);
+    state = imported;
     backendConfig.lastSyncByProfile = {
       ...(backendConfig.lastSyncByProfile || {}),
       [currentProfile.id]: result.updatedAt || new Date().toISOString(),
@@ -904,7 +915,7 @@ async function pullGoogleSheets({ confirmOverwrite = false, quiet = false } = {}
     saveBackendConfig();
     lastCloudPayload = cloudPayload();
     localStorage.setItem(profileStorageKey(), JSON.stringify(state));
-    cloudStatus = { state: "success", message: `Preneseno ${formatSyncTime(backendConfig.lastSyncByProfile[currentProfile.id])}.` };
+    cloudStatus = { state: "success", message: `Preneseno za profil "${currentProfile.id}": ${syncDataSummary(imported)}.` };
     return true;
   } catch (error) {
     cloudAutoSyncPaused = true;
@@ -933,6 +944,16 @@ async function pushGoogleSheets({ confirmOverwrite = false, quiet = false } = {}
     render();
   }
   try {
+    const freshness = await remoteFreshness();
+    if (freshness.isNewer) {
+      if (!confirmOverwrite) {
+        cloudAutoSyncPaused = true;
+        cloudStatus = { state: "error", message: `Google Sheets je novejši od te naprave (${formatSyncTime(freshness.updatedAt)}). Najprej klikni "Prenesi iz Sheets".` };
+        return false;
+      }
+      const overwrite = confirm(`Google Sheets je novejši od te naprave (${formatSyncTime(freshness.updatedAt)}). Vseeno prepišem Sheets s podatki iz te naprave?`);
+      if (!overwrite) return false;
+    }
     const payload = cloudPayload();
     const result = await cloudRequest("save", JSON.parse(payload));
     lastCloudPayload = payload;
@@ -960,6 +981,25 @@ function formatSyncTime(value) {
   return Number.isNaN(date.getTime())
     ? ""
     : date.toLocaleString("sl-SI", { dateStyle: "short", timeStyle: "short" });
+}
+
+function timestampValue(value) {
+  const time = new Date(value || "").getTime();
+  return Number.isNaN(time) ? 0 : time;
+}
+
+function currentProfileLastSync() {
+  return backendConfig.lastSyncByProfile?.[currentProfile?.id] || "";
+}
+
+async function remoteFreshness() {
+  const result = await cloudRequest("health");
+  const remoteTime = timestampValue(result.updatedAt);
+  const localTime = timestampValue(currentProfileLastSync());
+  return {
+    updatedAt: result.updatedAt || "",
+    isNewer: Boolean(remoteTime && (!localTime || remoteTime > localTime + 1000)),
+  };
 }
 
 async function initializeGoogleSheetsSync() {
