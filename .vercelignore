@@ -1,0 +1,12 @@
+dist
+finance-current-data.json
+desktop-main.cjs
+desktop-preload.cjs
+build-desktop.ps1
+server.mjs
+google-apps-script
+*.zip
+*.log
+.git
+.agents
+.codex

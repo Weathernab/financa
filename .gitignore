@@ -1,0 +1,10 @@
+dist/
+finance-current-data.json
+google-apps-script/
+desktop-main.cjs
+desktop-preload.cjs
+build-desktop.ps1
+server.mjs
+*.log
+.vercel/
+node_modules/

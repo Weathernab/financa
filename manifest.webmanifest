@@ -1,0 +1,48 @@
+{
+  "id": "./",
+  "name": "Financa",
+  "short_name": "Financa",
+  "description": "Osebni finančni dashboard za prihodke, stroške, premoženje in cilje.",
+  "lang": "sl",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#07101c",
+  "theme_color": "#07101c",
+  "categories": ["finance", "productivity"],
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Dodaj prihodek",
+      "short_name": "Prihodek",
+      "url": "./?view=incomes"
+    },
+    {
+      "name": "Dodaj strošek",
+      "short_name": "Strošek",
+      "url": "./?view=expenses"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "name": "financa",
+  "productName": "Financa",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Osebna aplikacija za spremljanje financ",
+  "main": "desktop-main.cjs",
+  "author": "Vid Petek"
+}
