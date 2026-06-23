@@ -34,8 +34,9 @@ Možnosti sta dve:
 
 1. V aplikaciji v admin nastavitvah ročno vpišeš Apps Script URL.
 2. V Vercelu nastaviš okoljsko spremenljivko `GOOGLE_APPS_SCRIPT_URL`.
+3. V Vercelu nastaviš okoljsko spremenljivko `GOOGLE_APPS_SCRIPT_SYNC_KEY`.
 
-Če uporabiš okoljsko spremenljivko, Apps Script URL ni viden v kodi aplikacije.
+Če uporabiš okoljski spremenljivki, Apps Script URL in sinhronizacijski ključ nista vidna v kodi aplikacije.
 
 ## Namestitev na iPhone
 

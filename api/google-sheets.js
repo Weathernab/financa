@@ -36,6 +36,10 @@ function validateAppsScriptUrl(value) {
   return target;
 }
 
+function serverSyncKey() {
+  return String(process.env.GOOGLE_APPS_SCRIPT_SYNC_KEY || "").trim();
+}
+
 module.exports = async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -46,7 +50,9 @@ module.exports = async function handler(req, res) {
   try {
     const body = await readBody(req);
     const target = validateAppsScriptUrl(body.endpoint);
-    const request = body.request || {};
+    const request = { ...(body.request || {}) };
+    const proxyKey = serverSyncKey();
+    if (proxyKey) request.key = proxyKey;
     let remote;
 
     if (request.action === "save" || request.action === "profiles-save" || request.action === "login") {

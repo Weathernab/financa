@@ -752,6 +752,14 @@ function hasValidSyncKey(config = googleSheetsConfig()) {
     && String(config.syncKey).length >= 12;
 }
 
+function hasServerManagedCloudAuth() {
+  return hasServerManagedCloudEndpoint();
+}
+
+function canAuthenticateCloud(config = googleSheetsConfig()) {
+  return Boolean(sessionCredentialHash || hasValidSyncKey(config) || hasServerManagedCloudAuth());
+}
+
 function googleSheetsEndpointError(endpoint) {
   if (!String(endpoint || "").trim()) {
     return hasServerManagedCloudEndpoint()
@@ -775,7 +783,7 @@ function googleSheetsEndpointError(endpoint) {
 function queueCloudSave() {
   const config = googleSheetsConfig();
   if (!cloudReady || cloudSyncInFlight || cloudAutoSyncPaused || !canUseCloudEndpoint(config)) return;
-  if (!sessionCredentialHash && !hasValidSyncKey(config)) {
+  if (!canAuthenticateCloud(config)) {
     cloudStatus = { state: "error", message: "Vnesi dejanski sinhronizacijski ključ, ne besedila TUKAJ_VNESI ..." };
     return;
   }
@@ -829,7 +837,7 @@ async function remoteProfileLogin(credentialHash) {
 
 async function cloudRequest(action, data = null) {
   const config = googleSheetsConfig();
-  if (!sessionCredentialHash && !hasValidSyncKey(config)) {
+  if (!canAuthenticateCloud(config)) {
     throw new Error("Prijava za Google Sheets ni nastavljena.");
   }
   return sendCloudRequest({
@@ -844,7 +852,7 @@ async function cloudRequest(action, data = null) {
 
 async function syncProfileRegistry() {
   const config = googleSheetsConfig();
-  if (!sessionCredentialHash && !hasValidSyncKey(config)) throw new Error("Prijava skrbnika ni veljavna.");
+  if (!canAuthenticateCloud(config)) throw new Error("Prijava skrbnika ni veljavna.");
   return sendCloudRequest({
     action: "profiles-save",
     key: config.syncKey,
@@ -945,7 +953,7 @@ function formatSyncTime(value) {
 
 async function initializeGoogleSheetsSync() {
   const config = googleSheetsConfig();
-  if (!canUseCloudEndpoint(config) || (!config.syncKey && !sessionCredentialHash)) {
+  if (!canUseCloudEndpoint(config) || !canAuthenticateCloud(config)) {
     cloudReady = true;
     cloudStatus = canUseCloudEndpoint(config)
       ? { state: "error", message: "Google Sheets je na voljo, vendar prijava še ni veljavna." }
@@ -955,7 +963,7 @@ async function initializeGoogleSheetsSync() {
   cloudStatus = { state: "pending", message: "Povezujem Google Sheets ..." };
   render();
   try {
-    if (currentProfile?.role === "admin" && hasValidSyncKey(config)) {
+    if (currentProfile?.role === "admin" && canAuthenticateCloud(config)) {
       await syncProfileRegistry();
     }
     const loaded = await pullGoogleSheets({ quiet: true });
@@ -2836,6 +2844,7 @@ function undoLastImport() {
 
 function settingsView() {
   const sheets = googleSheetsConfig();
+  const serverManagedAuth = hasServerManagedCloudAuth();
   const localBackupButton = currentProfile.role === "admin" && location.protocol.startsWith("http")
     ? `<button class="button secondary" data-action="local-backup">Shrani kopijo za namizno aplikacijo</button>`
     : "";
@@ -2878,9 +2887,9 @@ function settingsView() {
             <input type="url" name="endpoint" value="${escapeAttr(sheets.endpoint)}" placeholder="https://script.google.com/macros/s/.../exec ali prazno, če je nastavljen Vercel env">
           </label>
           <label class="full">Sinhronizacijski ključ
-            <input type="password" name="syncKey" value="${escapeAttr(sheets.syncKey)}" autocomplete="off" placeholder="Enak ključ kot v Apps Script kodi" required>
+            <input type="password" name="syncKey" value="${escapeAttr(sheets.syncKey)}" autocomplete="off" placeholder="${serverManagedAuth ? "V PWA ga lahko nastavi Vercel env" : "Enak ključ kot v Apps Script kodi"}" ${serverManagedAuth ? "" : "required"}>
           </label>
-          <p class="settings-note full">Pri mobilni PWA lahko URL ostane prazen, če je v Vercelu nastavljen GOOGLE_APPS_SCRIPT_URL.</p>
+          <p class="settings-note full">Pri mobilni PWA lahko URL ostane prazen, če je v Vercelu nastavljen GOOGLE_APPS_SCRIPT_URL. Sinhronizacijski ključ lahko ostane prazen, če je v Vercelu nastavljen GOOGLE_APPS_SCRIPT_SYNC_KEY.</p>
           <div class="full cloud-actions">
             <button class="button" type="submit">${sheets.enabled ? "Preveri povezavo" : "Poveži Google Sheets"}</button>
             ${sheets.enabled ? `
@@ -3382,7 +3391,7 @@ function bind() {
       syncKey: String(values.syncKey || "").trim(),
     };
     cloudAutoSyncPaused = false;
-    if (!hasValidSyncKey(backendConfig)) {
+    if (!hasValidSyncKey(backendConfig) && !hasServerManagedCloudAuth()) {
       cloudStatus = { state: "error", message: "Izberi dolg zasebni ključ in istega vpiši tudi v Code.gs." };
       saveBackendConfig();
       render();
