@@ -1763,6 +1763,7 @@ function view() {
 function dashboardView() {
   const data = monthlyData();
   const reviewCount = reviewTransactions().length;
+  const liquidAccounts = data.countedAccounts.filter(isSpendableAccount);
   const netWorthHint = data.netWorthChange === null
     ? "primerjava bo na voljo po naslednjem snapshotu"
     : `${signed(data.netWorthChange)} od prejšnjega meseca`;
@@ -1791,11 +1792,11 @@ function dashboardView() {
       </div>
     </section>
     <section class="dashboard-widgets" style="margin-top:14px">
-      <div class="card"><div class="card-header"><h3>Računi</h3></div><div class="card-body">${bars(data.countedAccounts.map((a) => [a.name, a.balance]))}</div></div>
+      <div class="card"><div class="card-header"><h3>Računi</h3></div><div class="card-body">${bars(liquidAccounts.map((a) => [a.name, a.balance]))}</div></div>
       <div class="card"><div class="card-header"><h3>Obveznosti v 30 dneh</h3></div><div class="card-body">${upcomingHtml()}</div></div>
       <div class="card"><div class="card-header"><h3>Cilji</h3></div><div class="card-body">${goalSummary()}</div></div>
     </section>
-    <section class="card" style="margin-top:18px"><div class="card-header"><h3>Nedavne transakcije</h3><button class="button secondary" data-nav="transactions">Prikaži vse</button></div><div class="card-body table-wrap">${transactionsTable(recentTransactions(6))}</div></section>
+    <section class="card" style="margin-top:18px"><div class="card-header"><h3>Nedavne transakcije</h3><button class="button secondary" data-nav="transactions">Prikaži vse</button></div><div class="card-body table-wrap">${modernTransactionsTable(recentTransactions(6))}</div></section>
   `;
 }
 
@@ -1861,8 +1862,8 @@ function transactionsView() {
     ${countCard("Transferji", state.transactions.filter((t) => t.status === "interni transfer").length, "ne vplivajo na porabo", "warning")}
   </section>
   <section class="grid two-col" style="margin-top:18px">
-    <div class="card"><div class="card-header"><h3>Za pregled</h3><span class="pill">${review.length} odprtih</span></div><div class="card-body table-wrap">${transactionsTable(review)}</div></div>
-    <div class="card"><div class="card-header"><h3>Vse transakcije</h3></div><div class="card-body table-wrap">${transactionsTable(ready)}</div></div>
+    <div class="card"><div class="card-header"><h3>Za pregled</h3><span class="pill">${review.length} odprtih</span></div><div class="card-body table-wrap">${modernTransactionsTable(review)}</div></div>
+    <div class="card"><div class="card-header"><h3>Vse transakcije</h3></div><div class="card-body table-wrap">${modernTransactionsTable(ready)}</div></div>
   </section>`;
 }
 
@@ -1876,6 +1877,21 @@ function reviewTransactions() {
 
 function recentTransactions(limit = 10) {
   return [...(state.transactions || [])].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, limit);
+}
+
+function modernTransactionsTable(rows) {
+  if (!rows.length) return `<div class="empty">Ni transakcij.</div>`;
+  return `<table><thead><tr><th>Ime</th><th>Znesek</th><th>Datum</th><th>Kategorija</th><th>Račun</th><th>Status</th><th></th></tr></thead><tbody>
+    ${rows.map((tx) => `<tr class="${tx.status === "za pregled" ? "review-row" : ""}">
+      <td>${escapeHtml(tx.description || "")}<br><small class="muted">${escapeHtml(tx.source || "")} ${tx.confidence ? "· " + (confidenceLevels[tx.confidence] || tx.confidence) : ""}</small></td>
+      <td><strong class="${Number(tx.amount) < 0 ? "negative" : "positive"}">${money(Number(tx.amount || 0))}</strong></td>
+      <td>${escapeHtml(tx.date || "")}</td>
+      <td><span class="pill">${escapeHtml(tx.category || "za pregled")}</span>${tx.subcategory ? `<br><small class="muted">${escapeHtml(tx.subcategory)}</small>` : ""}</td>
+      <td>${escapeHtml(tx.account || "")}</td>
+      <td>${escapeHtml(tx.status || "")}</td>
+      <td><div class="row-actions"><button class="icon-btn" title="Uredi" data-edit="transactions:${tx.id}">U</button><button class="icon-btn" title="Zapomni pravilo" data-rule-from-transaction="${tx.id}">Z</button></div></td>
+    </tr>`).join("")}
+  </tbody></table>`;
 }
 
 function transactionsTable(rows) {
