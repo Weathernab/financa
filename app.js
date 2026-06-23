@@ -334,6 +334,14 @@ function profileStorageKey(profileId = currentProfile?.id) {
   return `${PROFILE_DATA_PREFIX}${profileId}`;
 }
 
+function createProfileId(name = "") {
+  const base = normalizeText(name)
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32) || "user";
+  return `${base}-${crypto.randomUUID().slice(0, 8)}`;
+}
+
 function saveProfiles() {
   localStorage.setItem(PROFILE_REGISTRY_KEY, JSON.stringify(profiles));
 }
@@ -3361,7 +3369,7 @@ async function createUserProfile(values) {
     return;
   }
   const profile = {
-    id: crypto.randomUUID(),
+    id: createProfileId(name),
     name,
     role: "user",
     keyHash,
