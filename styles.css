@@ -778,6 +778,8 @@ textarea {
   border-radius: 8px;
   background: rgba(5, 10, 16, 0.36);
   color: var(--text);
+  font-size: 16px;
+  line-height: 1.35;
   outline: none;
 }
 
@@ -1648,6 +1650,14 @@ button:disabled {
 
   .actions {
     justify-content: flex-start;
+  }
+
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+    -webkit-text-size-adjust: 100%;
+    appearance: none;
   }
 
   .metrics,
