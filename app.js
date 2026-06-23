@@ -717,13 +717,18 @@ function save() {
 }
 
 function googleSheetsConfig() {
-  return {
+  const serverManaged = hasServerManagedCloudEndpoint();
+  const config = {
     enabled: false,
     endpoint: "",
     syncKey: "",
     lastSyncAt: "",
     ...backendConfig,
     lastSyncAt: backendConfig.lastSyncByProfile?.[currentProfile?.id] || "",
+  };
+  return {
+    ...config,
+    enabled: serverManaged ? true : config.enabled,
   };
 }
 
