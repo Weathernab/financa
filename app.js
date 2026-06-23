@@ -342,6 +342,24 @@ function createProfileId(name = "") {
   return `${base}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
+function cleanProfileId(value) {
+  return String(value || "")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .trim();
+}
+
+function normalizeProfile(profile, fallbackHash = "") {
+  if (!profile || typeof profile !== "object") return null;
+  const id = cleanProfileId(profile.id || profile.profileId || "");
+  if (!id) return null;
+  return {
+    ...profile,
+    id,
+    keyHash: profile.keyHash || fallbackHash,
+    active: profile.active !== false,
+  };
+}
+
 function saveProfiles() {
   localStorage.setItem(PROFILE_REGISTRY_KEY, JSON.stringify(profiles));
 }
@@ -440,13 +458,14 @@ async function loginWithKey(key) {
   render();
   try {
     const keyHash = await hashProfileKey(enteredKey);
-    let profile = profiles.find((item) => item.active !== false && item.keyHash === keyHash) || null;
+    let profile = normalizeProfile(profiles.find((item) => item.active !== false && item.keyHash === keyHash) || null, keyHash);
     if (!profile) {
       const result = await Promise.race([
         remoteProfileLogin(keyHash),
         new Promise((_, reject) => setTimeout(() => reject(new Error("Prijava se ni odzvala v 20 sekundah. Preveri povezavo in poskusi znova.")), 20000)),
       ]);
-      profile = result.profile;
+      profile = normalizeProfile(result.profile, keyHash);
+      if (!profile) throw new Error("Profil nima veljavnega ID-ja.");
       profiles = [...profiles.filter((item) => item.id !== profile.id), { ...profile, keyHash }];
       saveProfiles();
     }
@@ -961,6 +980,9 @@ async function pushGoogleSheets({ confirmOverwrite = false, quiet = false } = {}
     render();
   }
   try {
+    if (currentProfile?.role === "admin") {
+      await syncProfileRegistry();
+    }
     const freshness = await remoteFreshness();
     if (freshness.isNewer) {
       if (!confirmOverwrite) {
@@ -3090,7 +3112,7 @@ function adminProfilesView() {
   return `<div class="card profile-admin">
     <div class="card-header">
       <div><h3>Uporabniški profili</h3><p>Vsak profil ima svoj ključ in popolnoma ločene finančne podatke.</p></div>
-      <span class="pill">${profiles.filter((profile) => profile.active !== false).length} aktivnih</span>
+      <div class="actions"><button class="button secondary" type="button" data-action="sync-profiles">Sinhroniziraj profile v Sheets</button><span class="pill">${profiles.filter((profile) => profile.active !== false).length} aktivnih</span></div>
     </div>
     <div class="card-body">
       <form class="profile-create" data-create-profile>
@@ -3432,6 +3454,17 @@ async function toggleProfile(profileId) {
   render();
 }
 
+async function forceSyncProfiles() {
+  if (currentProfile?.role !== "admin") return;
+  try {
+    await syncProfileRegistry();
+    cloudStatus = { state: "success", message: "Profili so sinhronizirani v Google Sheets." };
+  } catch (error) {
+    cloudStatus = { state: "error", message: error.message || "Profilov ni bilo mogoÄŤe sinhronizirati." };
+  }
+  render();
+}
+
 function bind() {
   document.querySelectorAll("[data-login-form]").forEach((form) => form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -3520,6 +3553,7 @@ function bind() {
   }));
   document.querySelectorAll("[data-reset-profile-key]").forEach((btn) => btn.addEventListener("click", () => resetProfileKey(btn.dataset.resetProfileKey)));
   document.querySelectorAll("[data-toggle-profile]").forEach((btn) => btn.addEventListener("click", () => toggleProfile(btn.dataset.toggleProfile)));
+  document.querySelectorAll("[data-action='sync-profiles']").forEach((btn) => btn.addEventListener("click", forceSyncProfiles));
   document.querySelectorAll("[data-setup-form]").forEach((form) => form.addEventListener("submit", (event) => {
     event.preventDefault();
     saveSetupMode(form);
