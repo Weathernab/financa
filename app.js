@@ -809,8 +809,17 @@ async function sendCloudRequest(request) {
     throw new Error(message);
   }
   if (window.financaCloud?.request) return response;
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok || !result.ok) throw new Error(result.error || "Povezava z Google Sheets ni uspela.");
+  const text = await response.text().catch(() => "");
+  let result = {};
+  try {
+    result = text ? JSON.parse(text) : {};
+  } catch {
+    const excerpt = text ? ` Odgovor: ${text.slice(0, 140)}` : "";
+    throw new Error(`Vercel /api/google-sheets ni vrnil JSON odgovora (HTTP ${response.status}).${excerpt}`);
+  }
+  if (!response.ok || !result.ok) {
+    throw new Error(result.error || `Povezava z Google Sheets ni uspela (HTTP ${response.status}).`);
+  }
   return result;
 }
 
