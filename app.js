@@ -233,6 +233,15 @@ const navIcons = {
   settings: icon("settings"),
 };
 
+const dashboardNavTargets = {
+  "Prihodki": "incomes",
+  "Stroški": "expenses",
+  "Prihranek": "monthly",
+  "Investirano": "investments",
+  "Net worth": "networth",
+  "Obveznosti": "liabilities",
+};
+
 function icon(name) {
   const paths = {
     grid: `<rect x="4" y="4" width="6" height="6"/><rect x="14" y="4" width="6" height="6"/><rect x="4" y="14" width="6" height="6"/><rect x="14" y="14" width="6" height="6"/>`,
@@ -1778,30 +1787,31 @@ function dashboardView() {
   return `
     <section class="grid metrics">${metrics.map(metricCard).join("")}</section>
     <section class="dashboard-charts" style="margin-top:14px">
-      <div class="card">
+      <div class="card dashboard-link" data-nav="networth">
         <div class="card-header"><h3>Net worth trend</h3><span class="pill">mesečni snapshoti</span></div>
         <div class="card-body">${trendChart(netWorthSeries())}</div>
       </div>
-      <div class="card">
+      <div class="card dashboard-link" data-nav="expenses">
         <div class="card-header"><h3>Mesečni stroški</h3><span class="pill">${monthLabel(filters.month, filters.year)}</span></div>
         <div class="card-body">${weeklyColumnChart(data.expenses)}</div>
       </div>
-      <div class="card">
+      <div class="card dashboard-link" data-nav="expenses">
         <div class="card-header"><h3>Stroški po kategorijah</h3></div>
         <div class="card-body">${donutChart(groupBy(data.expenses, "category"))}</div>
       </div>
     </section>
     <section class="dashboard-widgets" style="margin-top:14px">
-      <div class="card"><div class="card-header"><h3>Računi</h3></div><div class="card-body">${bars(liquidAccounts.map((a) => [a.name, a.balance]))}</div></div>
-      <div class="card"><div class="card-header"><h3>Obveznosti v 30 dneh</h3></div><div class="card-body">${upcomingHtml()}</div></div>
-      <div class="card"><div class="card-header"><h3>Cilji</h3></div><div class="card-body">${goalSummary()}</div></div>
+      <div class="card dashboard-link" data-nav="accounts"><div class="card-header"><h3>Računi</h3></div><div class="card-body">${bars(liquidAccounts.map((a) => [a.name, a.balance]))}</div></div>
+      <div class="card dashboard-link" data-nav="liabilities"><div class="card-header"><h3>Obveznosti v 30 dneh</h3></div><div class="card-body">${upcomingHtml()}</div></div>
+      <div class="card dashboard-link" data-nav="goals"><div class="card-header"><h3>Cilji</h3></div><div class="card-body">${goalSummary()}</div></div>
     </section>
     <section class="card" style="margin-top:18px"><div class="card-header"><h3>Nedavne transakcije</h3><button class="button secondary" data-nav="transactions">Prikaži vse</button></div><div class="card-body table-wrap">${modernTransactionsTable(recentTransactions(6))}</div></section>
   `;
 }
 
 function metricCard([label, value, hint, tone]) {
-  return `<article class="card metric"><div class="metric-top"><span>${label}</span><i class="metric-icon ${tone}">${metricIcons[label] || "€"}</i></div><strong class="${tone}">${money(value)}</strong><small>${hint}</small></article>`;
+  const target = dashboardNavTargets[label] || "";
+  return `<article class="card metric ${target ? "dashboard-link" : ""}" ${target ? `data-nav="${target}"` : ""}><div class="metric-top"><span>${label}</span><i class="metric-icon ${tone}">${metricIcons[label] || "€"}</i></div><strong class="${tone}">${money(value)}</strong><small>${hint}</small></article>`;
 }
 
 function unavailableMetric(label, hint) {

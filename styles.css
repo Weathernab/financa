@@ -603,6 +603,21 @@ button {
   background: linear-gradient(135deg, rgba(255, 255, 255, 0.08), transparent 45%);
 }
 
+.dashboard-link {
+  cursor: pointer;
+  transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+}
+
+.dashboard-link:hover {
+  border-color: rgba(36, 214, 176, 0.42);
+  transform: translateY(-1px);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.26);
+}
+
+.dashboard-link:active {
+  transform: translateY(0);
+}
+
 .metric {
   min-height: 104px;
   padding: 16px;

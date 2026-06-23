@@ -1,4 +1,4 @@
-const CACHE_NAME = "financa-shell-v11";
+const CACHE_NAME = "financa-shell-v13";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -44,6 +44,21 @@ self.addEventListener("fetch", (event) => {
           return response;
         })
         .catch(() => caches.match("./index.html"))
+    );
+    return;
+  }
+
+  if (request.destination === "script" || request.destination === "style") {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          if (response.ok) {
+            const copy = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+          }
+          return response;
+        })
+        .catch(() => caches.match(request))
     );
     return;
   }
