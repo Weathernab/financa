@@ -348,16 +348,60 @@ function cleanProfileId(value) {
     .trim();
 }
 
+function isValidProfileId(value) {
+  const id = cleanProfileId(value);
+  return Boolean(id && id.length <= 80);
+}
+
 function normalizeProfile(profile, fallbackHash = "") {
   if (!profile || typeof profile !== "object") return null;
-  const id = cleanProfileId(profile.id || profile.profileId || "");
-  if (!id) return null;
+  let id = cleanProfileId(profile.id || profile.profileId || "");
+  if (!isValidProfileId(id)) id = createProfileId(profile.name || "uporabnik");
   return {
     ...profile,
     id,
     keyHash: profile.keyHash || fallbackHash,
     active: profile.active !== false,
   };
+}
+
+function normalizedProfilesForSync() {
+  const seen = new Set();
+  const cleaned = [];
+  for (const profile of profiles || []) {
+    let next = normalizeProfile(profile);
+    if (!next) {
+      const name = String(profile?.name || "Uporabnik").trim();
+      next = normalizeProfile({ ...profile, id: createProfileId(name), name });
+    }
+    if (next && !isValidProfileId(next.id)) {
+      next = { ...next, id: createProfileId(next.name || "uporabnik") };
+    }
+    if (!next || seen.has(next.id)) continue;
+    seen.add(next.id);
+    cleaned.push(next);
+  }
+  const adminSource = profiles.find((profile) => profile.role === "admin") || currentProfile;
+  const adminHash = adminSource?.keyHash || profiles.find((profile) => profile.id === "admin")?.keyHash || "";
+  const admin = {
+    ...adminSource,
+    id: "admin",
+    name: adminSource?.name || "Skrbnik",
+    role: "admin",
+    keyHash: adminHash,
+    active: true,
+  };
+  const withoutDuplicateAdmin = cleaned.filter((profile) => profile.id !== "admin" && profile.role !== "admin");
+  return [admin, ...withoutDuplicateAdmin];
+}
+
+function currentCloudProfile() {
+  if (currentProfile?.role === "admin") {
+    return { ...currentProfile, id: "admin", role: "admin", name: currentProfile.name || "Skrbnik" };
+  }
+  const normalized = normalizeProfile(currentProfile);
+  if (normalized) return normalized;
+  return null;
 }
 
 function saveProfiles() {
@@ -383,6 +427,13 @@ function loadBackendConfig() {
 
 function saveBackendConfig() {
   localStorage.setItem(BACKEND_CONFIG_KEY, JSON.stringify(backendConfig));
+}
+
+function normalizeSecret(value) {
+  return String(value || "")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\u00A0/g, " ")
+    .trim();
 }
 
 async function initializeProfileSystem() {
@@ -424,7 +475,7 @@ async function initializeProfileSystem() {
 
 async function loginWithKey(key) {
   if (loginPending) return;
-  const enteredKey = String(key || "");
+  const enteredKey = normalizeSecret(key);
   let localAdmin = profiles.find((item) => item.role === "admin" && item.active !== false);
   if (enteredKey === "admin" && !canUseCloudEndpoint()) {
     const keyHash = await hashProfileKey(enteredKey);
@@ -453,6 +504,34 @@ async function loginWithKey(key) {
     initializeGoogleSheetsSync();
     return;
   }
+  const cloudConfig = googleSheetsConfig();
+  if (canUseCloudEndpoint(cloudConfig) && hasValidSyncKey(cloudConfig) && enteredKey === cloudConfig.syncKey) {
+    const keyHash = await hashProfileKey(enteredKey);
+    const adminProfile = {
+      ...(localAdmin || {}),
+      id: "admin",
+      name: localAdmin?.name || "Skrbnik",
+      role: "admin",
+      keyHash,
+      active: true,
+      mustChangeKey: false,
+      createdAt: localAdmin?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    profiles = [...profiles.filter((item) => item.id !== "admin"), adminProfile];
+    saveProfiles();
+    sessionCredentialHash = keyHash;
+    currentProfile = adminProfile;
+    sessionStorage.setItem(PROFILE_SESSION_KEY, adminProfile.id);
+    sessionStorage.setItem(PROFILE_CREDENTIAL_SESSION_KEY, keyHash);
+    state = loadState();
+    active = state.settings.setupCompleted ? "dashboard" : "setup";
+    authMessage = "";
+    cloudReady = false;
+    render();
+    initializeGoogleSheetsSync();
+    return;
+  }
   loginPending = true;
   authMessage = "";
   render();
@@ -461,7 +540,7 @@ async function loginWithKey(key) {
     let profile = normalizeProfile(profiles.find((item) => item.active !== false && item.keyHash === keyHash) || null, keyHash);
     if (!profile) {
       const result = await Promise.race([
-        remoteProfileLogin(keyHash),
+        remoteProfileLogin(keyHash, enteredKey),
         new Promise((_, reject) => setTimeout(() => reject(new Error("Prijava se ni odzvala v 20 sekundah. Preveri povezavo in poskusi znova.")), 20000)),
       ]);
       profile = normalizeProfile(result.profile, keyHash);
@@ -882,8 +961,8 @@ async function sendCloudRequest(request) {
   return result;
 }
 
-async function remoteProfileLogin(credentialHash) {
-  return sendCloudRequest({ action: "login", credentialHash });
+async function remoteProfileLogin(credentialHash, enteredKey = "") {
+  return sendCloudRequest({ action: "login", credentialHash, key: normalizeSecret(enteredKey) });
 }
 
 async function cloudRequest(action, data = null) {
@@ -891,12 +970,14 @@ async function cloudRequest(action, data = null) {
   if (!canAuthenticateCloud(config)) {
     throw new Error("Prijava za Google Sheets ni nastavljena.");
   }
+  const cloudProfile = currentCloudProfile();
+  if (!cloudProfile?.id) throw new Error("Trenutni profil nima veljavnega ID-ja za Google Sheets.");
   return sendCloudRequest({
     action,
     key: config.syncKey,
     credentialHash: sessionCredentialHash,
-    profileId: currentProfile?.id || "",
-    profile: currentProfile ? { id: currentProfile.id, name: currentProfile.name, role: currentProfile.role } : null,
+    profileId: cloudProfile.id,
+    profile: { id: cloudProfile.id, name: cloudProfile.name, role: cloudProfile.role },
     data,
   });
 }
@@ -904,16 +985,27 @@ async function cloudRequest(action, data = null) {
 async function syncProfileRegistry() {
   const config = googleSheetsConfig();
   if (!canAuthenticateCloud(config)) throw new Error("Prijava skrbnika ni veljavna.");
+  profiles = normalizedProfilesForSync();
+  saveProfiles();
+  const cloudProfile = currentCloudProfile();
+  if (!cloudProfile?.id) throw new Error("Trenutni profil nima veljavnega ID-ja za Google Sheets.");
+  const cloudProfiles = profiles.map((profile) => ({
+    ...profile,
+    profileId: profile.id,
+    ime: profile.name,
+    vloga: profile.role,
+  }));
   return sendCloudRequest({
     action: "profiles-save",
     key: config.syncKey,
     credentialHash: sessionCredentialHash,
-    profiles,
+    profileId: cloudProfile.id,
+    profile: { id: cloudProfile.id, profileId: cloudProfile.id, name: cloudProfile.name, role: cloudProfile.role },
+    profiles: cloudProfiles,
   });
 }
 
 async function testGoogleSheetsConnection() {
-  cloudAutoSyncPaused = false;
   cloudStatus = { state: "pending", message: "Preverjam povezavo ..." };
   render();
   try {
@@ -922,7 +1014,13 @@ async function testGoogleSheetsConnection() {
     return result;
   } catch (error) {
     cloudAutoSyncPaused = true;
-    cloudStatus = { state: "error", message: error.message || "Povezava ni uspela." };
+    const message = String(error.message || "Povezava ni uspela.");
+    cloudStatus = {
+      state: "error",
+      message: message.includes("Ključ ni pravilen") || message.includes("Kljuc ni pravilen")
+        ? "Sinhronizacijski ključ se ne ujema z Apps Script CONFIG.SYNC_KEY ali pa uporabljaš star Web App deployment."
+        : message,
+    };
     throw error;
   } finally {
     render();
@@ -3460,7 +3558,13 @@ async function forceSyncProfiles() {
     await syncProfileRegistry();
     cloudStatus = { state: "success", message: "Profili so sinhronizirani v Google Sheets." };
   } catch (error) {
-    cloudStatus = { state: "error", message: error.message || "Profilov ni bilo mogoÄŤe sinhronizirati." };
+    const message = error.message || "Profilov ni bilo mogoce sinhronizirati.";
+    cloudStatus = {
+      state: "error",
+      message: message.includes("Samo skrbnik")
+        ? "Profilov ni bilo mogoce sinhronizirati: sinhronizacijski kljuc v aplikaciji se ne ujema z Apps Script CONFIG.SYNC_KEY ali Web App ni posodobljen na zadnjo verzijo."
+        : message,
+    };
   }
   render();
 }
@@ -3510,7 +3614,7 @@ function bind() {
       ...backendConfig,
       enabled: true,
       endpoint: String(values.endpoint || "").trim(),
-      syncKey: String(values.syncKey || "").trim(),
+      syncKey: normalizeSecret(values.syncKey),
     };
     cloudAutoSyncPaused = false;
     if (!hasValidSyncKey(backendConfig) && !hasServerManagedCloudAuth()) {
@@ -3529,9 +3633,13 @@ function bind() {
     }
     saveBackendConfig();
     try {
+      cloudAutoSyncPaused = true;
       await testGoogleSheetsConnection();
-      if (currentProfile?.role === "admin") await syncProfileRegistry();
       cloudReady = true;
+      lastCloudPayload = cloudPayload();
+      cloudStatus = { state: "success", message: "Povezava je preverjena. Profile sinhroniziraj loceno; podatke prenesi ali poslji rocno." };
+      render();
+      return;
       const loaded = await pullGoogleSheets({ quiet: true });
       if (loaded === false) {
         cloudAutoSyncPaused = true;

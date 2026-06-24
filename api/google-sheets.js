@@ -52,7 +52,7 @@ module.exports = async function handler(req, res) {
     const target = validateAppsScriptUrl(body.endpoint);
     const request = { ...(body.request || {}) };
     const proxyKey = serverSyncKey();
-    if (proxyKey) request.key = proxyKey;
+    if (!String(request.key || "").trim() && proxyKey) request.key = proxyKey;
     let remote;
 
     if (request.action === "save" || request.action === "profiles-save" || request.action === "login") {
