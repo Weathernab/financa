@@ -290,6 +290,7 @@ let cloudReady = false;
 let cloudSaveTimer = null;
 let cloudSyncInFlight = false;
 let cloudAutoSyncPaused = false;
+let cloudPendingSave = false;
 let cloudStatus = { state: "local", message: "Podatki so shranjeni lokalno." };
 let lastCloudPayload = "";
 let deferredInstallPrompt = null;
@@ -573,6 +574,7 @@ async function loginWithKey(key) {
 
 function logout() {
   clearTimeout(cloudSaveTimer);
+  cloudPendingSave = false;
   sessionStorage.removeItem(PROFILE_SESSION_KEY);
   sessionStorage.removeItem(PROFILE_CREDENTIAL_SESSION_KEY);
   currentProfile = null;
@@ -912,16 +914,21 @@ function googleSheetsEndpointError(endpoint) {
 
 function queueCloudSave() {
   const config = googleSheetsConfig();
-  if (!cloudReady || cloudSyncInFlight || cloudAutoSyncPaused || !canUseCloudEndpoint(config)) return;
+  if (!cloudReady || cloudAutoSyncPaused || !canUseCloudEndpoint(config)) return;
   if (!canAuthenticateCloud(config)) {
     cloudStatus = { state: "error", message: "Vnesi dejanski sinhronizacijski ključ, ne besedila TUKAJ_VNESI ..." };
     return;
   }
   const payload = cloudPayload();
   if (payload === lastCloudPayload) return;
+  cloudPendingSave = true;
+  if (cloudSyncInFlight) {
+    cloudStatus = { state: "pending", message: "Spremembe čakajo na konec trenutne sinhronizacije." };
+    return;
+  }
   clearTimeout(cloudSaveTimer);
-  cloudStatus = { state: "pending", message: "Spremembe čakajo na sinhronizacijo." };
-  cloudSaveTimer = setTimeout(() => pushGoogleSheets({ quiet: true }), 900);
+  cloudStatus = { state: "pending", message: "Shranjujem spremembe v Google Sheets ..." };
+  cloudSaveTimer = setTimeout(() => pushGoogleSheets({ quiet: true }), 150);
 }
 
 async function sendCloudRequest(request) {
@@ -1072,6 +1079,7 @@ async function pushGoogleSheets({ confirmOverwrite = false, quiet = false } = {}
   }
   if (!quiet) cloudAutoSyncPaused = false;
   cloudSyncInFlight = true;
+  cloudPendingSave = false;
   clearTimeout(cloudSaveTimer);
   if (!quiet) {
     cloudStatus = { state: "pending", message: "Shranjujem v Google Sheets ..." };
@@ -1108,6 +1116,9 @@ async function pushGoogleSheets({ confirmOverwrite = false, quiet = false } = {}
     return false;
   } finally {
     cloudSyncInFlight = false;
+    if (cloudPendingSave && !cloudAutoSyncPaused) {
+      setTimeout(() => queueCloudSave(), 0);
+    }
     render();
   }
 }
@@ -3636,6 +3647,7 @@ function bind() {
       cloudAutoSyncPaused = true;
       await testGoogleSheetsConnection();
       cloudReady = true;
+      cloudAutoSyncPaused = false;
       lastCloudPayload = cloudPayload();
       cloudStatus = { state: "success", message: "Povezava je preverjena. Profile sinhroniziraj loceno; podatke prenesi ali poslji rocno." };
       render();
@@ -3739,6 +3751,7 @@ function bind() {
     if (currentProfile?.role !== "admin") return;
     if (!confirm("Odklopim Google Sheets? Lokalni podatki bodo ostali nespremenjeni.")) return;
     clearTimeout(cloudSaveTimer);
+    cloudPendingSave = false;
     backendConfig = { ...backendConfig, enabled: false };
     cloudAutoSyncPaused = false;
     saveBackendConfig();
