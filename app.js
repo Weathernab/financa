@@ -1168,8 +1168,8 @@ async function initializeGoogleSheetsSync() {
     const loaded = await pullGoogleSheets({ quiet: true });
     cloudReady = true;
     if (loaded === false) {
-      cloudAutoSyncPaused = true;
-      cloudStatus = { state: "error", message: "V Google Sheets ni podatkov za ta profil. Samodejno pošiljanje je varnostno ustavljeno." };
+      cloudAutoSyncPaused = false;
+      cloudStatus = { state: "local", message: "Google Sheets je povezan. Ta profil še nima podatkov v backendu; prvi vnos jih bo ustvaril samodejno." };
       render();
     }
   } catch (error) {
@@ -3125,7 +3125,7 @@ function settingsView() {
         </div>
         <p class="settings-note">Finančni podatki se pošiljajo samo v tvoj Apps Script in Google Sheet. URL ter ključ ostaneta shranjena lokalno na tej napravi.</p>
       </div>
-    </div>` : `<div class="card"><div class="card-header"><h3>Google Sheets backend</h3><span class="sync-badge ${sheets.enabled ? "success" : "local"}">${sheets.enabled ? "Upravlja skrbnik" : "Ni povezan"}</span></div><div class="card-body"><p class="settings-note">Povezavo z osrednjim Google Sheets backendom nastavlja skrbnik. Podatki tega profila so ločeni z njegovim internim ID-jem.</p></div></div>`}
+    </div>` : userCloudSettingsView(sheets)}
     <div class="card"><div class="card-header"><h3>Podatki</h3></div><div class="card-body">
       <div class="actions" style="justify-content:flex-start">
         <button class="button" data-action="export-json">Izvozi JSON</button>
@@ -3135,6 +3135,31 @@ function settingsView() {
         <button class="button danger" data-action="clear">Izbriši vse podatke</button>
       </div>
     </div></div>
+  </div>`;
+}
+
+function userCloudSettingsView(sheets) {
+  const usable = canUseCloudEndpoint(sheets);
+  return `<div class="card cloud-settings">
+    <div class="card-header">
+      <div><h3>Google Sheets backend</h3><p>Sinhronizacija podatkov tega profila.</p></div>
+      <span class="sync-badge ${cloudStatus.state}">${
+        cloudStatus.state === "success" ? "Povezano"
+          : cloudStatus.state === "pending" ? "Povezujem"
+            : usable ? "Na voljo" : "Ni povezan"
+      }</span>
+    </div>
+    <div class="card-body">
+      <div class="sync-status ${cloudStatus.state}">
+        <span class="sync-dot"></span>
+        <div><strong>${escapeHtml(cloudStatus.message)}</strong>${sheets.lastSyncAt ? `<small>Zadnja uspešna sinhronizacija: ${formatSyncTime(sheets.lastSyncAt)}</small>` : ""}</div>
+      </div>
+      <div class="cloud-actions">
+        <button class="button secondary" type="button" data-action="cloud-pull" ${usable ? "" : "disabled"}>Prenesi iz Sheets</button>
+        <button class="button secondary" type="button" data-action="cloud-push" ${usable ? "" : "disabled"}>Pošlji v Sheets</button>
+      </div>
+      <p class="settings-note">Povezavo nastavlja skrbnik. Tvoji podatki so ločeni od drugih profilov in se shranjujejo pod internim ID-jem profila.</p>
+    </div>
   </div>`;
 }
 
