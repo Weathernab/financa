@@ -1339,6 +1339,14 @@ function openModal(collection, title, item = null) {
   render();
 }
 
+function openDeleteProfileModal(profileId) {
+  if (currentProfile?.role !== "admin" || profileId === currentProfile.id) return;
+  const profile = profiles.find((item) => item.id === profileId);
+  if (!profile) return;
+  modal = { collection: "deleteProfile", title: "Izbris profila", item: { profileId, profileName: profile.name } };
+  render();
+}
+
 function closeModal() {
   modal = null;
   render();
@@ -3394,6 +3402,7 @@ function recordedActivityMonths(limit = 6) {
 }
 
 function modalHtml() {
+  if (modal.collection === "deleteProfile") return deleteProfileModalHtml();
   const current = modal.item || defaults(modal.collection);
   return `<div class="modal-backdrop">
     <form class="modal" data-form="${modal.collection}">
@@ -3403,6 +3412,31 @@ function modalHtml() {
         ${fields[modal.collection].map(([name, type, label, options]) => fieldHtml(name, type, label, current[name], options)).join("")}
       </div>
       <div class="modal-foot"><button type="button" class="button secondary" data-action="close">Prekliči</button><button class="button" type="submit">Shrani</button></div>
+    </form>
+  </div>`;
+}
+
+function deleteProfileModalHtml() {
+  const profileName = modal.item?.profileName || "";
+  return `<div class="modal-backdrop">
+    <form class="modal" data-delete-profile-form="${escapeAttr(modal.item?.profileId || "")}">
+      <div class="modal-head"><h3>Izbris profila</h3><button type="button" class="icon-btn" data-action="close">X</button></div>
+      <div class="modal-body form-grid">
+        <div class="full">
+          <p class="settings-note">Profil "${escapeHtml(profileName)}" bo odstranjen iz seznama profilov. Uporabnik se po tem ne bo več mogel prijaviti. Lokalni podatki tega profila na tej napravi bodo izbrisani.</p>
+        </div>
+        <label class="toggle-row full">
+          <input type="checkbox" name="confirmed" required>
+          <span>Razumem, da želim izbrisati ta profil.</span>
+        </label>
+        <label class="full">Admin ključ
+          <input type="password" name="adminKey" autocomplete="current-password" required autofocus>
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="button secondary" data-action="close">Prekliči</button>
+        <button class="button danger" type="submit">Izbriši profil</button>
+      </div>
     </form>
   </div>`;
 }
@@ -3589,14 +3623,15 @@ async function toggleProfile(profileId) {
   render();
 }
 
-async function deleteUserProfile(profileId) {
+async function deleteUserProfile(profileId, values = {}) {
   if (currentProfile?.role !== "admin" || profileId === currentProfile.id) return;
   const profile = profiles.find((item) => item.id === profileId);
   if (!profile) return;
-  const confirmed = confirm(`Trajno izbrišem profil "${profile.name}" iz seznama profilov?\n\nUporabnik se po tem ne bo več mogel prijaviti. Lokalni podatki tega profila na tej napravi bodo izbrisani.`);
-  if (!confirmed) return;
-  const adminKey = prompt("Za potrditev brisanja vnesi admin ključ:");
-  if (adminKey === null) return;
+  if (!values.confirmed) {
+    alert("Za brisanje moraš potrditi, da razumeš posledice.");
+    return;
+  }
+  const adminKey = values.adminKey || "";
   const adminHash = await hashProfileKey(normalizeSecret(adminKey));
   if (adminHash !== currentProfile.keyHash) {
     alert("Admin ključ ni pravilen. Profil ni bil izbrisan.");
@@ -3611,6 +3646,7 @@ async function deleteUserProfile(profileId) {
   } catch (error) {
     cloudStatus = { state: "error", message: error.message || "Profil je izbrisan lokalno, vendar sinhronizacija v Sheets ni uspela." };
   }
+  closeModal();
   render();
 }
 
@@ -3724,7 +3760,11 @@ function bind() {
   }));
   document.querySelectorAll("[data-reset-profile-key]").forEach((btn) => btn.addEventListener("click", () => resetProfileKey(btn.dataset.resetProfileKey)));
   document.querySelectorAll("[data-toggle-profile]").forEach((btn) => btn.addEventListener("click", () => toggleProfile(btn.dataset.toggleProfile)));
-  document.querySelectorAll("[data-delete-profile]").forEach((btn) => btn.addEventListener("click", () => deleteUserProfile(btn.dataset.deleteProfile)));
+  document.querySelectorAll("[data-delete-profile]").forEach((btn) => btn.addEventListener("click", () => openDeleteProfileModal(btn.dataset.deleteProfile)));
+  document.querySelectorAll("[data-delete-profile-form]").forEach((form) => form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await deleteUserProfile(form.dataset.deleteProfileForm, Object.fromEntries(new FormData(form).entries()));
+  }));
   document.querySelectorAll("[data-action='sync-profiles']").forEach((btn) => btn.addEventListener("click", forceSyncProfiles));
   document.querySelectorAll("[data-setup-form]").forEach((form) => form.addEventListener("submit", (event) => {
     event.preventDefault();
