@@ -3158,7 +3158,7 @@ function userCloudSettingsView(sheets) {
         <button class="button secondary" type="button" data-action="cloud-pull" ${usable ? "" : "disabled"}>Prenesi iz Sheets</button>
         <button class="button secondary" type="button" data-action="cloud-push" ${usable ? "" : "disabled"}>Pošlji v Sheets</button>
       </div>
-      <p class="settings-note">Povezavo nastavlja skrbnik. Tvoji podatki so ločeni od drugih profilov in se shranjujejo pod internim ID-jem profila.</p>
+      <p class="settings-note">Tvoji podatki so ločeni od drugih profilov in se sinhronizirajo pod internim ID-jem profila.</p>
     </div>
   </div>`;
 }
