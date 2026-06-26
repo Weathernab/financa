@@ -3266,6 +3266,7 @@ function adminProfilesView() {
             <button class="button ${profile.active === false ? "secondary" : "danger ghost"}" data-toggle-profile="${profile.id}">
               ${profile.active === false ? "Aktiviraj" : "Deaktiviraj"}
             </button>
+            <button class="button danger" data-delete-profile="${profile.id}">Izbriši</button>
           ` : `<span class="pill">Trenutni profil</span>`}
         </article>`).join("")}
       </div>
@@ -3588,6 +3589,31 @@ async function toggleProfile(profileId) {
   render();
 }
 
+async function deleteUserProfile(profileId) {
+  if (currentProfile?.role !== "admin" || profileId === currentProfile.id) return;
+  const profile = profiles.find((item) => item.id === profileId);
+  if (!profile) return;
+  const confirmed = confirm(`Trajno izbrišem profil "${profile.name}" iz seznama profilov?\n\nUporabnik se po tem ne bo več mogel prijaviti. Lokalni podatki tega profila na tej napravi bodo izbrisani.`);
+  if (!confirmed) return;
+  const adminKey = prompt("Za potrditev brisanja vnesi admin ključ:");
+  if (adminKey === null) return;
+  const adminHash = await hashProfileKey(normalizeSecret(adminKey));
+  if (adminHash !== currentProfile.keyHash) {
+    alert("Admin ključ ni pravilen. Profil ni bil izbrisan.");
+    return;
+  }
+  profiles = profiles.filter((item) => item.id !== profileId);
+  saveProfiles();
+  localStorage.removeItem(profileStorageKey(profileId));
+  try {
+    await syncProfileRegistry();
+    cloudStatus = { state: "success", message: `Profil "${profile.name}" je izbrisan in seznam profilov je sinhroniziran.` };
+  } catch (error) {
+    cloudStatus = { state: "error", message: error.message || "Profil je izbrisan lokalno, vendar sinhronizacija v Sheets ni uspela." };
+  }
+  render();
+}
+
 async function forceSyncProfiles() {
   if (currentProfile?.role !== "admin") return;
   try {
@@ -3698,6 +3724,7 @@ function bind() {
   }));
   document.querySelectorAll("[data-reset-profile-key]").forEach((btn) => btn.addEventListener("click", () => resetProfileKey(btn.dataset.resetProfileKey)));
   document.querySelectorAll("[data-toggle-profile]").forEach((btn) => btn.addEventListener("click", () => toggleProfile(btn.dataset.toggleProfile)));
+  document.querySelectorAll("[data-delete-profile]").forEach((btn) => btn.addEventListener("click", () => deleteUserProfile(btn.dataset.deleteProfile)));
   document.querySelectorAll("[data-action='sync-profiles']").forEach((btn) => btn.addEventListener("click", forceSyncProfiles));
   document.querySelectorAll("[data-setup-form]").forEach((form) => form.addEventListener("submit", (event) => {
     event.preventDefault();
