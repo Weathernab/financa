@@ -292,6 +292,7 @@ let cloudSyncInFlight = false;
 let cloudAutoSyncPaused = false;
 let cloudPendingSave = false;
 let lastRemoteProfileCount = null;
+let profileRegistrySupported = null;
 let cloudStatus = { state: "local", message: "Podatki so shranjeni lokalno." };
 let lastCloudPayload = "";
 let deferredInstallPrompt = null;
@@ -995,6 +996,12 @@ async function cloudRequest(action, data = null) {
 async function syncProfileRegistry() {
   const config = googleSheetsConfig();
   if (!canAuthenticateCloud(config)) throw new Error("Prijava skrbnika ni veljavna.");
+  if (profileRegistrySupported !== true) {
+    const pulled = await pullProfileRegistry();
+    if (pulled === null) {
+      throw new Error("Backend ne podpira varne sinhronizacije profilov. Posodobi Apps Script in Vercel deployment.");
+    }
+  }
   profiles = normalizedProfilesForSync();
   saveProfiles();
   const cloudProfile = currentCloudProfile();
@@ -1051,12 +1058,16 @@ async function pullProfileRegistry() {
       credentialHash: sessionCredentialHash,
       profileId: cloudProfile.id,
     });
+    profileRegistrySupported = true;
     lastRemoteProfileCount = Array.isArray(result.profiles) ? result.profiles.length : 0;
     return mergeProfileRegistries(result.profiles || []);
   } catch (error) {
     const message = String(error?.message || "");
     const unsupported = message.includes("Neznana akcija") || message.includes("Neveljavna zahteva za shranjevanje");
-    if (unsupported) return null;
+    if (unsupported) {
+      profileRegistrySupported = false;
+      return null;
+    }
     throw error;
   }
 }
@@ -1135,9 +1146,6 @@ async function pushGoogleSheets({ confirmOverwrite = false, quiet = false } = {}
     render();
   }
   try {
-    if (currentProfile?.role === "admin") {
-      await syncProfileRegistry();
-    }
     const freshness = await remoteFreshness();
     if (freshness.isNewer) {
       if (!confirmOverwrite) {
@@ -3686,14 +3694,22 @@ async function deleteUserProfile(profileId, values = {}) {
     alert("Admin ključ ni pravilen. Profil ni bil izbrisan.");
     return;
   }
-  profiles = profiles.filter((item) => item.id !== profileId);
-  saveProfiles();
-  localStorage.removeItem(profileStorageKey(profileId));
   try {
-    await syncProfileRegistry();
-    cloudStatus = { state: "success", message: `Profil "${profile.name}" je izbrisan in seznam profilov je sinhroniziran.` };
+    const config = googleSheetsConfig();
+    const cloudProfile = currentCloudProfile();
+    await sendCloudRequest({
+      action: "profile-delete",
+      key: config.syncKey,
+      credentialHash: sessionCredentialHash,
+      profileId: cloudProfile.id,
+      deleteProfileId: profileId,
+    });
+    profiles = profiles.filter((item) => item.id !== profileId);
+    saveProfiles();
+    localStorage.removeItem(profileStorageKey(profileId));
+    cloudStatus = { state: "success", message: `Profil "${profile.name}" je izbrisan iz registra profilov.` };
   } catch (error) {
-    cloudStatus = { state: "error", message: error.message || "Profil je izbrisan lokalno, vendar sinhronizacija v Sheets ni uspela." };
+    cloudStatus = { state: "error", message: error.message || "Profila ni bilo mogoče varno izbrisati iz Google Sheets." };
   }
   closeModal();
   render();
@@ -3702,7 +3718,8 @@ async function deleteUserProfile(profileId, values = {}) {
 async function forceSyncProfiles() {
   if (currentProfile?.role !== "admin") return;
   try {
-    await pullProfileRegistry();
+    const pulled = await pullProfileRegistry();
+    if (pulled === null) throw new Error("Backend ne podpira varne sinhronizacije profilov. Posodobi Apps Script in Vercel deployment.");
     await syncProfileRegistry();
     const remoteSummary = lastRemoteProfileCount === null ? "" : ` Sheets je vrnil ${lastRemoteProfileCount} profilov.`;
     cloudStatus = { state: "success", message: `Profili so sinhronizirani.${remoteSummary} Prikazanih je ${profiles.filter((profile) => profile.active !== false).length} aktivnih profilov.` };
