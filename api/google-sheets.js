@@ -55,7 +55,7 @@ module.exports = async function handler(req, res) {
     if (!String(request.key || "").trim() && proxyKey) request.key = proxyKey;
     let remote;
 
-    if (request.action === "save" || request.action === "profiles-save" || request.action === "login") {
+    if (request.action === "save" || request.action === "profiles-save" || request.action === "profiles-load" || request.action === "login") {
       remote = await fetch(target, {
         method: "POST",
         headers: { "Content-Type": "text/plain;charset=utf-8" },

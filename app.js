@@ -1012,6 +1012,44 @@ async function syncProfileRegistry() {
   });
 }
 
+function mergeProfileRegistries(remoteProfiles) {
+  const merged = new Map();
+  for (const profile of profiles || []) {
+    const normalized = normalizeProfile(profile);
+    if (normalized) merged.set(normalized.id, normalized);
+  }
+  for (const profile of remoteProfiles || []) {
+    const normalized = normalizeProfile(profile);
+    if (!normalized) continue;
+    const local = merged.get(normalized.id);
+    merged.set(normalized.id, {
+      ...(local || {}),
+      ...normalized,
+      keyHash: normalized.keyHash || local?.keyHash || "",
+    });
+  }
+  profiles = [...merged.values()];
+  profiles = normalizedProfilesForSync();
+  const refreshedCurrent = profiles.find((profile) => profile.id === currentProfile?.id);
+  if (refreshedCurrent) currentProfile = { ...currentProfile, ...refreshedCurrent };
+  saveProfiles();
+  return profiles;
+}
+
+async function pullProfileRegistry() {
+  if (currentProfile?.role !== "admin") return profiles;
+  const config = googleSheetsConfig();
+  if (!canAuthenticateCloud(config)) throw new Error("Prijava skrbnika ni veljavna.");
+  const cloudProfile = currentCloudProfile();
+  const result = await sendCloudRequest({
+    action: "profiles-load",
+    key: config.syncKey,
+    credentialHash: sessionCredentialHash,
+    profileId: cloudProfile.id,
+  });
+  return mergeProfileRegistries(result.profiles || []);
+}
+
 async function testGoogleSheetsConnection() {
   cloudStatus = { state: "pending", message: "Preverjam povezavo ..." };
   render();
@@ -1163,7 +1201,7 @@ async function initializeGoogleSheetsSync() {
   render();
   try {
     if (currentProfile?.role === "admin" && canAuthenticateCloud(config)) {
-      await syncProfileRegistry();
+      await pullProfileRegistry();
     }
     const loaded = await pullGoogleSheets({ quiet: true });
     cloudReady = true;
@@ -3653,8 +3691,9 @@ async function deleteUserProfile(profileId, values = {}) {
 async function forceSyncProfiles() {
   if (currentProfile?.role !== "admin") return;
   try {
+    await pullProfileRegistry();
     await syncProfileRegistry();
-    cloudStatus = { state: "success", message: "Profili so sinhronizirani v Google Sheets." };
+    cloudStatus = { state: "success", message: `Profili so sinhronizirani. Prikazanih je ${profiles.filter((profile) => profile.active !== false).length} aktivnih profilov.` };
   } catch (error) {
     const message = error.message || "Profilov ni bilo mogoce sinhronizirati.";
     cloudStatus = {
