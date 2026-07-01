@@ -291,6 +291,7 @@ let cloudSaveTimer = null;
 let cloudSyncInFlight = false;
 let cloudAutoSyncPaused = false;
 let cloudPendingSave = false;
+let lastRemoteProfileCount = null;
 let cloudStatus = { state: "local", message: "Podatki so shranjeni lokalno." };
 let lastCloudPayload = "";
 let deferredInstallPrompt = null;
@@ -392,7 +393,9 @@ function normalizedProfilesForSync() {
     keyHash: adminHash,
     active: true,
   };
-  const withoutDuplicateAdmin = cleaned.filter((profile) => profile.id !== "admin" && profile.role !== "admin");
+  const withoutDuplicateAdmin = cleaned
+    .filter((profile) => profile.id !== "admin")
+    .map((profile) => profile.role === "admin" ? { ...profile, role: "user" } : profile);
   return [admin, ...withoutDuplicateAdmin];
 }
 
@@ -1041,13 +1044,21 @@ async function pullProfileRegistry() {
   const config = googleSheetsConfig();
   if (!canAuthenticateCloud(config)) throw new Error("Prijava skrbnika ni veljavna.");
   const cloudProfile = currentCloudProfile();
-  const result = await sendCloudRequest({
-    action: "profiles-load",
-    key: config.syncKey,
-    credentialHash: sessionCredentialHash,
-    profileId: cloudProfile.id,
-  });
-  return mergeProfileRegistries(result.profiles || []);
+  try {
+    const result = await sendCloudRequest({
+      action: "profiles-load",
+      key: config.syncKey,
+      credentialHash: sessionCredentialHash,
+      profileId: cloudProfile.id,
+    });
+    lastRemoteProfileCount = Array.isArray(result.profiles) ? result.profiles.length : 0;
+    return mergeProfileRegistries(result.profiles || []);
+  } catch (error) {
+    const message = String(error?.message || "");
+    const unsupported = message.includes("Neznana akcija") || message.includes("Neveljavna zahteva za shranjevanje");
+    if (unsupported) return null;
+    throw error;
+  }
 }
 
 async function testGoogleSheetsConnection() {
@@ -3693,7 +3704,8 @@ async function forceSyncProfiles() {
   try {
     await pullProfileRegistry();
     await syncProfileRegistry();
-    cloudStatus = { state: "success", message: `Profili so sinhronizirani. Prikazanih je ${profiles.filter((profile) => profile.active !== false).length} aktivnih profilov.` };
+    const remoteSummary = lastRemoteProfileCount === null ? "" : ` Sheets je vrnil ${lastRemoteProfileCount} profilov.`;
+    cloudStatus = { state: "success", message: `Profili so sinhronizirani.${remoteSummary} Prikazanih je ${profiles.filter((profile) => profile.active !== false).length} aktivnih profilov.` };
   } catch (error) {
     const message = error.message || "Profilov ni bilo mogoce sinhronizirati.";
     cloudStatus = {
