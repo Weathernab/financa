@@ -14,7 +14,7 @@ const currentMonth = now.getMonth() + 1;
 const pad = (value) => String(value).padStart(2, "0");
 const iso = (year, month, day) => `${year}-${pad(month)}-${pad(day)}`;
 
-const incomeCategories = ["plača", "nadure", "študentsko delo", "povračilo stroškov", "prodaja stvari", "dividende", "obresti", "prihodki", "interni transfer", "za pregled", "drugo"];
+const incomeCategories = ["plača", "regres", "nadure", "študentsko delo", "povračilo stroškov", "prodaja stvari", "dividende", "obresti", "prihodki", "interni transfer", "za pregled", "drugo"];
 const expenseCategories = ["stanovanje", "hrana", "gorivo", "avto", "zavarovanja", "telefon", "šport", "oblačila", "prosti čas", "naročnine", "restavracije/kava", "potovanja", "darila", "zdravje", "orodje/oprema", "davki", "gotovina", "investicije", "spletni nakupi", "bančni stroški", "interni transfer", "za pregled", "drugo"];
 const importCategories = [...new Set([...expenseCategories, ...incomeCategories, "transfer"])];
 const confidenceLevels = { high: "Visoko zaupanje", medium: "Srednje zaupanje", low: "Nizko zaupanje", manual: "Ročno potrjeno" };
@@ -77,6 +77,14 @@ const fields = {
     ["account", "account-select", "Račun"],
     ["type", "select", "Tip", ["prihodek", "strošek", "interni transfer", "za pregled"]],
     ["status", "select", "Status", ["pripravljeno", "za pregled", "interni transfer", "možen dvojnik", "nepopolno"]],
+    ["note", "textarea", "Opomba"],
+  ],
+  transfers: [
+    ["date", "date", "Datum"],
+    ["description", "text", "Opis"],
+    ["amount", "number", "Znesek"],
+    ["fromAccountId", "account-id-select", "Iz računa"],
+    ["toAccountId", "account-id-select", "Na račun"],
     ["note", "textarea", "Opomba"],
   ],
   accounts: [
@@ -196,6 +204,7 @@ const navItems = [
   ["incomes", "Prihodki", "Vnos in filtriranje prihodkov"],
   ["expenses", "Stroški", "Fiksni, variabilni in večji stroški"],
   ["accounts", "Računi", "Denarnice in sredstva"],
+  ["wealth", "Premoženje", "Računi, investicije in net worth"],
   ["investments", "Investicije", "Ročna evidenca portfelja"],
   ["networth", "Net worth", "Sredstva minus obveznosti"],
   ["liabilities", "Obveznosti", "Roki in večja plačila"],
@@ -209,10 +218,8 @@ const navItems = [
 ];
 
 const navGroups = [
-  { title: "Pregled", items: ["dashboard", "transactions", "monthly", "analytics"] },
-  { title: "Evidence", items: ["incomes", "expenses", "accounts", "investments", "networth"] },
-  { title: "Načrtovanje", items: ["liabilities", "taxes", "goals"] },
-  { title: "Podatki", items: ["imports", "settings"] },
+  { title: "Pregled", items: ["dashboard", "transactions", "wealth", "liabilities", "goals", "monthly", "analytics"] },
+  { title: "Sistem", items: ["settings"] },
 ];
 
 const navIcons = {
@@ -221,6 +228,7 @@ const navIcons = {
   incomes: icon("arrowUp"),
   expenses: icon("arrowDown"),
   accounts: icon("wallet"),
+  wealth: icon("wallet"),
   investments: icon("trend"),
   networth: icon("chart"),
   liabilities: icon("calendar"),
@@ -259,6 +267,9 @@ function icon(name) {
     upload: `<path d="M12 16V4"/><path d="M7 9l5-5 5 5"/><path d="M5 16v4h14v-4"/>`,
     logout: `<path d="M10 5H5v14h5"/><path d="M14 8l4 4-4 4"/><path d="M8 12h10"/>`,
     sliders: `<path d="M5 7h14M5 17h14"/><circle cx="9" cy="7" r="2"/><circle cx="15" cy="17" r="2"/>`,
+    plus: `<path d="M12 5v14M5 12h14"/>`,
+    sync: `<path d="M20 7h-5V2"/><path d="M20 7a8 8 0 1 0 1 8"/>`,
+    more: `<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>`,
     settings: `<circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.1l2-1.5-2-3.4-2.4 1a7 7 0 0 0-1.9-1.1L14.3 3h-4.6L9.4 5.9A7 7 0 0 0 7.5 7l-2.4-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .8.1 1.1l-2 1.5 2 3.4 2.4-1a7 7 0 0 0 1.9 1.1l.3 2.9h4.6l.3-2.9a7 7 0 0 0 1.9-1.1l2.4 1 2-3.4-2-1.5c.1-.3.1-.7.1-1.1z"/>`,
   };
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name]}</svg>`;
@@ -280,6 +291,9 @@ let state = currentProfile ? loadState() : emptyState({ setupCompleted: false })
 let backendConfig = loadBackendConfig();
 let active = currentProfile ? (state.settings.setupCompleted ? "dashboard" : "setup") : "login";
 let modal = null;
+let addMenuOpen = false;
+let rowMenuOpen = "";
+let settingsTab = "general";
 let authMessage = "";
 let loginPending = false;
 let sessionCredentialHash = sessionStorage.getItem(PROFILE_CREDENTIAL_SESSION_KEY) || "";
@@ -1077,7 +1091,8 @@ async function testGoogleSheetsConnection() {
   render();
   try {
     const result = await cloudRequest("health");
-    cloudStatus = { state: "success", message: `Povezano: ${result.spreadsheetName || "Google Sheets"}` };
+    const version = result.scriptVersion ? ` · backend ${result.scriptVersion}` : "";
+    cloudStatus = { state: "success", message: `Povezano: ${result.spreadsheetName || "Google Sheets"}${version}` };
     return result;
   } catch (error) {
     cloudAutoSyncPaused = true;
@@ -1388,7 +1403,23 @@ function upcomingLiabilities() {
 
 function setActive(id) {
   active = id;
+  addMenuOpen = false;
+  rowMenuOpen = "";
   render();
+}
+
+function activeNavParent(id = active) {
+  if (["transactions", "incomes", "expenses"].includes(id)) return "transactions";
+  if (["wealth", "accounts", "investments", "networth"].includes(id)) return "wealth";
+  if (["liabilities", "taxes"].includes(id)) return "liabilities";
+  if (["settings", "imports", "setup"].includes(id)) return "settings";
+  return id;
+}
+
+function sectionTabs(items) {
+  return `<div class="section-tabs">${items.map(([id, label]) =>
+    `<button class="${active === id || (id === "wealth" && active === "accounts") ? "active" : ""}" data-nav="${id === "wealth" ? "accounts" : id}">${label}</button>`
+  ).join("")}</div>`;
 }
 
 function openModal(collection, title, item = null) {
@@ -1413,6 +1444,12 @@ function upsert(collection, values) {
   const clean = Object.fromEntries(Object.entries(values).map(([key, value]) => [key, numericField(key) ? Number(value || 0) : value]));
   const editingId = modal?.collection === collection ? modal.item?.id : "";
   if (editingId) clean.id = editingId;
+  if (collection === "transfers") {
+    if (!upsertTransfer(clean)) return;
+    save();
+    closeModal();
+    return;
+  }
   if (collection === "transactions") {
     upsertTransaction(clean);
     save();
@@ -1743,6 +1780,64 @@ function deleteIncomeRecord(id, removeTransaction = false) {
   }
 }
 
+function restoreTransferBalance(transfer) {
+  const amount = Math.abs(Number(transfer?.balanceImpact || transfer?.amount || 0));
+  if (!transfer?.fromAccountId || !transfer?.toAccountId || amount <= 0) return;
+  state.accounts = (state.accounts || []).map((account) => {
+    if (account.id === transfer.fromAccountId) return { ...account, balance: Number(account.balance || 0) + amount };
+    if (account.id === transfer.toAccountId) return { ...account, balance: Number(account.balance || 0) - amount };
+    return account;
+  });
+}
+
+function upsertTransfer(clean) {
+  const existing = (state.transactions || []).find((item) => item.id === clean.id);
+  const fromAccount = (state.accounts || []).find((account) => account.id === clean.fromAccountId && isSpendableAccount(account));
+  const toAccount = (state.accounts || []).find((account) => account.id === clean.toAccountId && isSpendableAccount(account));
+  const amount = Math.abs(Number(clean.amount || 0));
+  if (!fromAccount || !toAccount) {
+    alert("Izberi izvorni in ciljni račun.");
+    return false;
+  }
+  if (fromAccount.id === toAccount.id) {
+    alert("Izvorni in ciljni račun morata biti različna.");
+    return false;
+  }
+  if (amount <= 0) {
+    alert("Vnesi znesek prenosa, večji od 0.");
+    return false;
+  }
+  if (existing?.transferManaged) restoreTransferBalance(existing);
+  const transfer = {
+    ...(existing || {}),
+    ...clean,
+    id: clean.id || crypto.randomUUID(),
+    date: clean.date || iso(currentYear, currentMonth, now.getDate()),
+    description: clean.description || `Prenos: ${fromAccount.name} → ${toAccount.name}`,
+    amount,
+    currency: "EUR",
+    category: "interni transfer",
+    type: "interni transfer",
+    status: "interni transfer",
+    account: `${fromAccount.name} → ${toAccount.name}`,
+    source: "ročno",
+    confidence: "manual",
+    fromAccountId: fromAccount.id,
+    toAccountId: toAccount.id,
+    balanceImpact: amount,
+    transferManaged: true,
+    linkedIncomeId: "",
+    linkedExpenseId: "",
+  };
+  replaceOrInsertRecord("transactions", transfer);
+  state.accounts = state.accounts.map((account) => {
+    if (account.id === fromAccount.id) return { ...account, balance: Number(account.balance || 0) - amount };
+    if (account.id === toAccount.id) return { ...account, balance: Number(account.balance || 0) + amount };
+    return account;
+  });
+  return true;
+}
+
 function upsertTransaction(clean) {
   const existing = (state.transactions || []).find((item) => item.id === clean.id);
   const tx = {
@@ -1826,6 +1921,7 @@ function removeItem(collection, id) {
   if (!confirm("Izbrišem ta vnos?")) return;
   if (collection === "transactions") {
     const tx = (state.transactions || []).find((item) => item.id === id);
+    if (tx?.transferManaged) restoreTransferBalance(tx);
     if (tx) removeLinkedLedger(tx);
   }
   if (collection === "expenses") {
@@ -1868,7 +1964,7 @@ function render() {
             const nav = navItems.find(([itemId]) => itemId === id);
             if (!nav) return "";
             const [, label] = nav;
-            return `<button class="${active === id ? "active" : ""}" data-nav="${id}"><span class="nav-icon">${navIcons[id]}</span><span>${label}</span></button>`;
+            return `<button class="${activeNavParent() === id ? "active" : ""}" data-nav="${id === "wealth" ? "accounts" : id}"><span class="nav-icon">${navIcons[id]}</span><span>${label}</span></button>`;
           }).join("")}</div>`).join("")}
         </nav>
         <div class="sidebar-card">
@@ -1891,10 +1987,9 @@ function render() {
           </div>
           <div class="actions">
             <span class="date-pill">${monthLabel(filters.month, filters.year)}</span>
-            ${quickAction()}
-            <button class="icon-btn top-icon" title="Obvestila">!</button>
-            <button class="icon-btn top-icon" title="Nastavitve" data-nav="settings">NA</button>
-            <button class="button secondary theme-toggle" data-action="theme">${state.settings.theme === "dark" ? "Svetel način" : "Temen način"}</button>
+            ${addActionMenu()}
+            ${cloudStatusButton()}
+            <button class="icon-btn top-icon" title="Nastavitve" aria-label="Nastavitve" data-nav="settings">${icon("settings")}</button>
           </div>
         </div>
         ${view()}
@@ -1933,36 +2028,42 @@ function profileInitials(name) {
   return String(name || "UP").split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
 }
 
-function quickAction() {
-  const map = {
-    incomes: ["Dodaj prihodek", "incomes"],
-    expenses: ["Dodaj strošek", "expenses"],
-    transactions: ["Dodaj transakcijo", "transactions"],
-    accounts: ["Dodaj račun", "accounts"],
-    investments: ["Dodaj investicijo", "investments"],
-    liabilities: ["Dodaj obveznost", "liabilities"],
-    taxes: ["Dodaj davek", "taxes"],
-    goals: ["Dodaj cilj", "goals"],
-    networth: ["Dodaj snapshot", "snapshots"],
-    monthly: ["Dodaj komentar", "monthlyNotes"],
-    setup: ["Shrani setup", "setupSave"],
-  };
-  const cfg = map[active];
-  if (cfg?.[1] === "setupSave") return `<button class="button" data-action="save-setup">Shrani setup</button>`;
-  return cfg ? `<button class="button" data-add="${cfg[1]}">${cfg[0]}</button>` : "";
+function addActionMenu() {
+  const actions = [
+    ["incomes", "Prihodek", "arrowUp"],
+    ["expenses", "Strošek", "arrowDown"],
+    ["transfers", "Prenos", "sync"],
+    ["investments", "Investicija", "trend"],
+    ["liabilities", "Obveznost", "calendar"],
+  ];
+  return `<div class="action-menu-wrap">
+    <button class="button add-main" type="button" aria-label="Dodaj" data-action="toggle-add-menu">${icon("plus")}<span>Dodaj</span></button>
+    ${addMenuOpen ? `<div class="action-menu">${actions.map(([collection, label, iconName]) =>
+      `<button type="button" data-add="${collection}"><span>${icon(iconName)}</span>${label}</button>`
+    ).join("")}</div>` : ""}
+  </div>`;
+}
+
+function cloudStatusButton() {
+  const title = cloudStatus.message || "Stanje sinhronizacije";
+  return `<button class="icon-btn top-icon cloud-indicator ${cloudStatus.state}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" data-action="cloud-status">${icon("sync")}<i></i></button>`;
 }
 
 function view() {
+  const transactionTabs = [["transactions", "Vse"], ["incomes", "Prihodki"], ["expenses", "Stroški"]];
+  const wealthTabs = [["wealth", "Računi"], ["investments", "Investicije"], ["networth", "Net worth"]];
+  const liabilityTabs = [["liabilities", "Obveznosti"], ["taxes", "Davki"]];
   const views = {
     dashboard: dashboardView,
-    incomes: () => collectionView("incomes", "Prihodki", incomeColumns(), filterHtml("incomes")),
-    expenses: () => collectionView("expenses", "Stroški", expenseColumns(), filterHtml("expenses")),
-    transactions: transactionsView,
-    accounts: accountsView,
-    investments: investmentsView,
-    networth: netWorthView,
-    liabilities: () => collectionView("liabilities", "Obveznosti", liabilityColumns()),
-    taxes: () => collectionView("taxes", "Davčni dogodki", taxColumns()),
+    incomes: () => sectionTabs(transactionTabs) + collectionView("incomes", "Prihodki", incomeColumns(), filterHtml("incomes")),
+    expenses: () => sectionTabs(transactionTabs) + collectionView("expenses", "Stroški", expenseColumns(), filterHtml("expenses")),
+    transactions: () => sectionTabs(transactionTabs) + transactionsView(),
+    accounts: () => sectionTabs(wealthTabs) + accountsView(),
+    wealth: () => sectionTabs(wealthTabs) + accountsView(),
+    investments: () => sectionTabs(wealthTabs) + investmentsView(),
+    networth: () => sectionTabs(wealthTabs) + netWorthView(),
+    liabilities: () => sectionTabs(liabilityTabs) + collectionView("liabilities", "Obveznosti", liabilityColumns()),
+    taxes: () => sectionTabs(liabilityTabs) + collectionView("taxes", "Davčni dogodki", taxColumns()),
     goals: goalsView,
     monthly: monthlyView,
     analytics: analyticsView,
@@ -2056,7 +2157,19 @@ function collectionView(collection, title, columns, filtersHtml = "") {
 
 function table(collection, rows, columns) {
   if (!rows.length) return `<div class="empty">Ni vnosov.</div>`;
-  return `<table><thead><tr>${columns.map((c) => `<th>${c[0]}</th>`).join("")}<th></th></tr></thead><tbody>${rows.map((row) => `<tr>${columns.map(([, renderCell]) => `<td>${renderCell(row)}</td>`).join("")}<td><div class="row-actions"><button class="icon-btn" title="Uredi" data-edit="${collection}:${row.id}">U</button><button class="icon-btn" title="Izbriši" data-delete="${collection}:${row.id}">X</button></div></td></tr>`).join("")}</tbody></table>`;
+  return `<table><thead><tr>${columns.map((c) => `<th>${c[0]}</th>`).join("")}<th></th></tr></thead><tbody>${rows.map((row) => `<tr>${columns.map(([, renderCell]) => `<td>${renderCell(row)}</td>`).join("")}<td>${rowActionMenu(collection, row.id)}</td></tr>`).join("")}</tbody></table>`;
+}
+
+function rowActionMenu(collection, id, { allowRule = false } = {}) {
+  const key = `${collection}:${id}`;
+  return `<div class="row-menu-wrap">
+    <button class="icon-btn row-menu-trigger" type="button" title="Več možnosti" aria-label="Več možnosti" data-row-menu="${escapeAttr(key)}">${icon("more")}</button>
+    ${rowMenuOpen === key ? `<div class="row-menu">
+      <button type="button" data-edit="${escapeAttr(key)}">Uredi</button>
+      ${allowRule ? `<button type="button" data-rule-from-transaction="${escapeAttr(id)}">Zapomni pravilo</button>` : ""}
+      <button class="danger-text" type="button" data-delete="${escapeAttr(key)}">Izbriši</button>
+    </div>` : ""}
+  </div>`;
 }
 
 function incomeColumns() {
@@ -2103,7 +2216,7 @@ function modernTransactionsTable(rows) {
       <td><span class="pill">${escapeHtml(tx.category || "za pregled")}</span>${tx.subcategory ? `<br><small class="muted">${escapeHtml(tx.subcategory)}</small>` : ""}</td>
       <td>${escapeHtml(tx.account || "")}</td>
       <td>${escapeHtml(tx.status || "")}</td>
-      <td><div class="row-actions"><button class="icon-btn" title="Uredi" data-edit="transactions:${tx.id}">U</button><button class="icon-btn" title="Zapomni pravilo" data-rule-from-transaction="${tx.id}">Z</button></div></td>
+      <td>${rowActionMenu("transactions", tx.id, { allowRule: !tx.transferManaged })}</td>
     </tr>`).join("")}
   </tbody></table>`;
 }
@@ -2118,7 +2231,7 @@ function transactionsTable(rows) {
       <td>${escapeHtml(tx.account || "")}</td>
       <td>${escapeHtml(tx.status || "")}</td>
       <td><strong class="${Number(tx.amount) < 0 ? "negative" : "positive"}">${money(Math.abs(Number(tx.amount || 0)))}</strong></td>
-      <td><div class="row-actions"><button class="icon-btn" title="Uredi" data-edit="transactions:${tx.id}">U</button><button class="icon-btn" title="Zapomni pravilo" data-rule-from-transaction="${tx.id}">Z</button></div></td>
+      <td>${rowActionMenu("transactions", tx.id, { allowRule: !tx.transferManaged })}</td>
     </tr>`).join("")}
   </tbody></table>`;
 }
@@ -2206,7 +2319,7 @@ function netWorthItems(items, key) {
 function goalsView() {
   return `<div class="grid three-col">${state.goals.map((goal) => {
     const pct = Math.min(100, Number(goal.currentAmount || 0) / Math.max(1, Number(goal.targetAmount || 0)) * 100);
-    return `<article class="card metric"><span>${goal.priority} prioriteta</span><strong>${goal.name}</strong><small>${money(goal.currentAmount)} od ${money(goal.targetAmount)} do ${goal.dueDate}</small><div class="progress" style="--value:${pct}%"><span></span></div><small>${NUMBER.format(pct)} %</small><div class="row-actions"><button class="button secondary" data-edit="goals:${goal.id}">Uredi</button><button class="button danger" data-delete="goals:${goal.id}">Izbriši</button></div></article>`;
+    return `<article class="card metric goal-card"><div class="card-inline-head"><span>${goal.priority} prioriteta</span>${rowActionMenu("goals", goal.id)}</div><strong>${goal.name}</strong><small>${money(goal.currentAmount)} od ${money(goal.targetAmount)} do ${goal.dueDate}</small><div class="progress" style="--value:${pct}%"><span></span></div><small>${NUMBER.format(pct)} %</small></article>`;
   }).join("")}</div>`;
 }
 
@@ -2239,26 +2352,26 @@ function analyticsView() {
   const months = recordedActivityMonths(6);
   const completedMonths = completedActivityMonths(6);
   const selectedExpenses = state.expenses.filter((item) => sameMonth(item));
-  const monthData = months.map(([month, year]) => monthlyData(month, year));
-  const incomeSeries = months.map(([m, y]) => [monthLabel(m, y), sum(state.incomes.filter((i) => sameMonth(i, "date", m, y)))]);
+  const monthData = completedMonths.map(([month, year]) => analyticsMonthlyData(month, year));
+  const incomeSeries = months.map(([m, y]) => [monthLabel(m, y), recurringIncomeTotal(m, y)]);
   const expenseSeries = months.map(([m, y]) => [monthLabel(m, y), sum(state.expenses.filter((i) => sameMonth(i, "date", m, y)))]);
   const savingsSeries = months.map(([m, y]) => {
-    const d = monthlyData(m, y);
+    const d = analyticsMonthlyData(m, y);
     return [monthLabel(m, y), d.savingsRate];
-  }).filter(([, rate], index) => sum(state.incomes.filter((i) => sameMonth(i, "date", months[index][0], months[index][1]))) > 0);
+  }).filter(([, rate], index) => recurringIncomeTotal(months[index][0], months[index][1]) > 0);
   const nwSeries = netWorthHistory().map((s) => [monthLabel(s.month, s.year), s.netWorth]);
   const averageIncome = average(monthData.map((item) => item.incomeTotal));
   const averageExpenses = average(monthData.map((item) => item.expenseTotal));
   const averageSavings = average(monthData.map((item) => item.saved));
   const structure = groupBy(selectedExpenses, "kind");
   return `<section class="grid metrics">
-    ${metricCard(["Povp. prihodki", averageIncome, trackedMonthsLabel(months.length), "positive"])}
-    ${metricCard(["Povp. stroški", averageExpenses, trackedMonthsLabel(months.length), "negative"])}
-    ${metricCard(["Povp. prihranek", averageSavings, "na evidentirani mesec", averageSavings >= 0 ? "positive" : "negative"])}
+    ${metricCard(["Povp. redni prihodki", averageIncome, `${completedMonths.length} zaključenih mesecev · brez regresa`, "positive"])}
+    ${metricCard(["Povp. stroški", averageExpenses, `${completedMonths.length} zaključenih mesecev`, "negative"])}
+    ${metricCard(["Povp. prihranek", averageSavings, "na zaključen mesec brez regresa", averageSavings >= 0 ? "positive" : "negative"])}
     ${countCard("Zaključeni meseci", completedMonths.length, completedMonths.length >= 3 ? "forecast je na voljo" : "za forecast so potrebni 3", completedMonths.length >= 3 ? "positive" : "warning")}
   </section>
   <section class="grid two-col" style="margin-top:14px">
-    <div class="card"><div class="card-header"><h3>Prihodki po mesecih</h3></div><div class="card-body">${trendChart(incomeSeries)}</div></div>
+    <div class="card"><div class="card-header"><h3>Redni prihodki po mesecih</h3><span class="pill">brez regresa</span></div><div class="card-body">${trendChart(incomeSeries)}</div></div>
     <div class="card"><div class="card-header"><h3>Stroški po mesecih</h3></div><div class="card-body">${trendChart(expenseSeries)}</div></div>
     <div class="card"><div class="card-header"><h3>Savings rate</h3></div><div class="card-body">${trendChart(savingsSeries, "%")}</div></div>
     <div class="card"><div class="card-header"><h3>Net worth</h3></div><div class="card-body">${trendChart(nwSeries)}</div></div>
@@ -2267,11 +2380,11 @@ function analyticsView() {
   </section>
   <section class="analytics-deep" style="margin-top:14px">
     <div class="card"><div class="card-header"><h3>Forecast</h3><span class="pill">3 / 6 / 12 mesecev</span></div><div class="card-body">${forecastHtml(months)}</div></div>
-    <div class="card"><div class="card-header"><h3>Priporočena razporeditev</h3><span class="pill">informativna smernica</span></div><div class="card-body">${allocationGuidanceHtml(months)}</div></div>
+    <div class="card"><div class="card-header"><h3>Priporočena razporeditev</h3><span class="pill">zaključeni meseci</span></div><div class="card-body">${allocationGuidanceHtml()}</div></div>
   </section>
   <section class="card" style="margin-top:14px">
-    <div class="card-header"><h3>Priložnosti za zmanjšanje porabe</h3><span class="pill">${months.length >= 3 ? "na podlagi povprečja" : "preliminarno"}</span></div>
-    <div class="card-body">${spendingRecommendationsHtml(months)}</div>
+    <div class="card-header"><h3>Priložnosti za zmanjšanje porabe</h3><span class="pill">${completedMonths.length >= 3 ? "zadnji 3 zaključeni meseci" : "preliminarno"}</span></div>
+    <div class="card-body">${spendingRecommendationsHtml()}</div>
   </section>`;
 }
 
@@ -2285,12 +2398,35 @@ function completedActivityMonths(limit = 6) {
   ).slice(-limit);
 }
 
+function isRegresIncome(item) {
+  const searchable = [item?.name, item?.category, item?.source, item?.note]
+    .map((value) => String(value || "").toLocaleLowerCase("sl-SI"))
+    .join(" ");
+  return /(^|\s)regres(\s|$)/i.test(searchable);
+}
+
+function recurringIncomeTotal(month, year) {
+  return sum(state.incomes.filter((item) => sameMonth(item, "date", month, year) && !isRegresIncome(item)));
+}
+
+function analyticsMonthlyData(month, year) {
+  const data = monthlyData(month, year);
+  const incomeTotal = recurringIncomeTotal(month, year);
+  const saved = incomeTotal - data.expenseTotal;
+  return {
+    ...data,
+    incomeTotal,
+    saved,
+    savingsRate: incomeTotal ? saved / incomeTotal * 100 : 0,
+  };
+}
+
 function forecastHtml() {
   const months = completedActivityMonths(6);
   if (months.length < 3) {
     return `<div class="empty">Forecast bo na voljo po treh zaključenih mesecih. Trenutno jih je ${months.length}.</div>`;
   }
-  const recent = months.slice(-3).map(([month, year]) => monthlyData(month, year));
+  const recent = months.slice(-3).map(([month, year]) => analyticsMonthlyData(month, year));
   const monthlyIncome = average(recent.map((item) => item.incomeTotal));
   const monthlyExpenses = average(recent.map((item) => item.expenseTotal));
   const monthlySurplus = monthlyIncome - monthlyExpenses;
@@ -2311,9 +2447,10 @@ function analyticsExpenseSample(months) {
   return state.expenses.filter((item) => selected.some(([month, year]) => sameMonth(item, "date", month, year)));
 }
 
-function allocationGuidanceHtml(months) {
+function allocationGuidanceHtml() {
+  const months = completedActivityMonths(6);
   if (!months.length) return `<div class="empty">Za priporočilo najprej dodaj prihodke in stroške.</div>`;
-  const data = months.slice(-3).map(([month, year]) => monthlyData(month, year));
+  const data = months.slice(-3).map(([month, year]) => analyticsMonthlyData(month, year));
   const monthlyIncome = average(data.map((item) => item.incomeTotal));
   const monthlyExpenses = average(months.slice(-3).map(([month, year]) =>
     sum(state.expenses.filter((item) => sameMonth(item, "date", month, year) && item.kind !== "enkratni večji"))
@@ -2344,7 +2481,7 @@ function allocationGuidanceHtml(months) {
     <strong>${money(target)}</strong>
     <small>${label.includes("meseč") || label.includes("Budget") ? "predlagano na mesec" : `trenutno ${money(current)}`}</small>
   </div>`).join("")}</div>
-  <p class="analysis-note">Smernice temeljijo na trenutni porabi, niso individualno finančno svetovanje. Varnostna rezerva je ocenjena na tri mesece osnovnih stroškov.</p>`;
+  <p class="analysis-note">Izračun uporablja največ zadnje tri zaključene mesece. Regres in enkratni večji stroški so izločeni. Varnostna rezerva je ocenjena na tri mesece osnovnih stroškov.</p>`;
 }
 
 function accountAllocation() {
@@ -2359,7 +2496,8 @@ function accountAllocation() {
   };
 }
 
-function spendingRecommendationsHtml(months) {
+function spendingRecommendationsHtml() {
+  const months = completedActivityMonths(6);
   if (!months.length) return `<div class="empty">Za priporočila najprej evidentiraj vsaj en mesec stroškov.</div>`;
   const sampleMonths = months.slice(-3);
   const sample = analyticsExpenseSample(sampleMonths).filter((item) => item.kind !== "enkratni večji");
@@ -2391,7 +2529,8 @@ function spendingRecommendationsHtml(months) {
   return `<div class="recommendation-list">${suggestions.map((item) => `<div class="recommendation">
     <div><strong>${escapeHtml(item.category)}</strong><span>${NUMBER.format(item.share)} % mesečne porabe · povprečno ${money(item.value)}</span></div>
     <b>Možen prihranek ${money(item.saving)} / mesec</b>
-  </div>`).join("")}</div>`;
+  </div>`).join("")}</div>
+  <p class="analysis-note">Metoda primerja povprečje največ zadnjih treh zaključenih mesecev z orientacijskimi deleži celotne porabe: restavracije/kava in prosti čas 8 %, naročnine 4 %, oblačila 5 %, spletni nakupi 6 % in potovanja 15 %. Možen prihranek je znesek nad tem pragom.</p>`;
 }
 
 function importsView() {
@@ -2702,7 +2841,7 @@ function importHistoryTable(history) {
 function categoryRulesTable(rules) {
   if (!rules.length) return `<div class="empty">Ni shranjenih pravil. Ob ročni spremembi kategorije lahko označiš “Zapomni”.</div>`;
   return `<table><thead><tr><th>Ključna beseda</th><th>Kategorija</th><th>Podkategorija</th><th>Velja za</th><th>Ustvarjeno</th><th></th></tr></thead><tbody>
-    ${rules.map((rule) => `<tr><td>${escapeHtml(rule.keyword)}</td><td>${escapeHtml(rule.category)}</td><td>${escapeHtml(rule.subcategory || "")}</td><td>${escapeHtml(rule.appliesTo || "oboje")}</td><td>${escapeHtml(rule.createdAt || "")}</td><td><div class="row-actions"><button class="icon-btn" data-edit="categoryRules:${rule.id}">U</button><button class="icon-btn" data-delete="categoryRules:${rule.id}">X</button></div></td></tr>`).join("")}
+    ${rules.map((rule) => `<tr><td>${escapeHtml(rule.keyword)}</td><td>${escapeHtml(rule.category)}</td><td>${escapeHtml(rule.subcategory || "")}</td><td>${escapeHtml(rule.appliesTo || "oboje")}</td><td>${escapeHtml(rule.createdAt || "")}</td><td>${rowActionMenu("categoryRules", rule.id)}</td></tr>`).join("")}
   </tbody></table>`;
 }
 
@@ -3128,6 +3267,80 @@ function undoLastImport() {
 }
 
 function settingsView() {
+  const tabs = [
+    ["general", "Splošno"],
+    ["data", "Podatki"],
+    ["sync", "Sinhronizacija"],
+    ...(currentProfile.role === "admin" ? [["profiles", "Profili"]] : []),
+  ];
+  if (!tabs.some(([id]) => id === settingsTab)) settingsTab = "general";
+  const content = {
+    general: settingsGeneralView,
+    data: settingsDataView,
+    sync: settingsSyncView,
+    profiles: () => adminProfilesView(),
+  };
+  return `<div class="settings-panel">
+    <div class="settings-tabs">${tabs.map(([id, label]) => `<button class="${settingsTab === id ? "active" : ""}" type="button" data-settings-tab="${id}">${label}</button>`).join("")}</div>
+    ${content[settingsTab]()}
+  </div>`;
+}
+
+function settingsGeneralView() {
+  return `${pwaInstallView()}
+    <div class="card profile-settings">
+      <div class="card-header"><div><h3>Moj profil</h3><p>Prijavljen kot ${escapeHtml(currentProfile.name)}.</p></div><span class="pill">${currentProfile.role === "admin" ? "Skrbnik" : "Uporabnik"}</span></div>
+      <div class="card-body"><form class="form-grid" data-change-profile-key>
+        <label>Trenutni ključ<input type="password" name="currentKey" autocomplete="current-password" required></label>
+        <label>Novi ključ<input type="password" name="newKey" autocomplete="new-password" minlength="4" required></label>
+        <label>Ponovi novi ključ<input type="password" name="confirmKey" autocomplete="new-password" minlength="4" required></label>
+        <div class="profile-form-action"><button class="button" type="submit">Spremeni ključ</button></div>
+      </form></div>
+    </div>
+    <div class="card"><div class="card-header"><h3>Običajne nastavitve</h3></div><div class="card-body form-grid">
+      <label>Začetni mesec<input type="month" data-setting="startMonth" value="${state.settings.startMonth}"></label>
+      <label>Privzeta valuta<select data-setting="currency"><option value="EUR" selected>EUR</option></select></label>
+      <label>Videz<select data-setting="theme">${option("light", state.settings.theme)}${option("dark", state.settings.theme)}</select></label>
+    </div></div>
+    ${currentProfile.role === "admin" ? roundUpSavingsSettingsView() : ""}`;
+}
+
+function settingsDataView() {
+  const localBackupButton = currentProfile.role === "admin" && location.protocol.startsWith("http")
+    ? `<button class="button secondary" data-action="local-backup">Shrani kopijo za namizno aplikacijo</button>`
+    : "";
+  return `<div class="card"><div class="card-header"><div><h3>Podatki in varnostne kopije</h3><p>Izvoz, obnovitev in začetni popis podatkov.</p></div></div><div class="card-body">
+    <div class="settings-action-grid">
+      <button class="button" data-action="export-json">Izvozi JSON</button>
+      <button class="button secondary" data-action="export-csv">Izvozi CSV</button>
+      ${localBackupButton}
+      <label class="button secondary">Uvozi JSON<input type="file" accept="application/json" data-action="import-json" hidden></label>
+      <button class="button secondary" data-nav="setup">Odpri začetni setup</button>
+      <button class="button danger ghost" data-action="clear">Izbriši vse podatke</button>
+    </div>
+  </div></div>
+  <div class="settings-embedded-import">${importsView()}</div>`;
+}
+
+function settingsSyncView() {
+  const sheets = googleSheetsConfig();
+  if (currentProfile.role !== "admin") return userCloudSettingsView(sheets);
+  const serverManagedAuth = hasServerManagedCloudAuth();
+  return `<div class="card cloud-settings">
+    <div class="card-header"><div><h3>Google Sheets</h3><p>Sinhronizacija med napravami.</p></div><span class="sync-badge ${cloudStatus.state}">${cloudStatus.state === "success" ? "Povezano" : cloudStatus.state === "pending" ? "Povezujem" : "Preveri povezavo"}</span></div>
+    <div class="card-body">
+      <div class="sync-status ${cloudStatus.state}"><span class="sync-dot"></span><div><strong>${escapeHtml(cloudStatus.message)}</strong></div></div>
+      <form class="form-grid" data-google-sheets-form>
+        <label class="full">URL spletne aplikacije<input type="url" name="endpoint" value="${escapeAttr(sheets.endpoint)}" placeholder="https://script.google.com/macros/s/.../exec"></label>
+        <label class="full">Sinhronizacijski ključ<input type="password" name="syncKey" value="${escapeAttr(sheets.syncKey)}" autocomplete="off" placeholder="${serverManagedAuth ? "Nastavljen v okolju" : "Enak ključ kot v Apps Script kodi"}" ${serverManagedAuth ? "" : "required"}></label>
+        <div class="full cloud-actions"><button class="button" type="submit">Preveri povezavo</button>${sheets.enabled ? `<button class="button secondary" type="button" data-action="cloud-pull">Prenesi</button><button class="button secondary" type="button" data-action="cloud-push">Pošlji</button><button class="button danger ghost" type="button" data-action="cloud-disconnect">Odklopi</button>` : ""}</div>
+      </form>
+      <p class="settings-note">Samodejna sinhronizacija deluje po vsaki spremembi. Ročni akciji uporabi samo pri obnovitvi ali menjavi naprave.</p>
+    </div>
+  </div>`;
+}
+
+function legacySettingsView() {
   const sheets = googleSheetsConfig();
   const serverManagedAuth = hasServerManagedCloudAuth();
   const localBackupButton = currentProfile.role === "admin" && location.protocol.startsWith("http")
@@ -3311,7 +3524,7 @@ function adminProfilesView() {
   return `<div class="card profile-admin">
     <div class="card-header">
       <div><h3>Uporabniški profili</h3><p>Vsak profil ima svoj ključ in popolnoma ločene finančne podatke.</p></div>
-      <div class="actions"><button class="button secondary" type="button" data-action="sync-profiles">Sinhroniziraj profile v Sheets</button><span class="pill">${profiles.filter((profile) => profile.active !== false).length} aktivnih</span></div>
+      <div class="actions"><button class="icon-btn top-icon" type="button" title="Sinhroniziraj profile" aria-label="Sinhroniziraj profile" data-action="sync-profiles">${icon("sync")}</button><span class="pill">${profiles.filter((profile) => profile.active !== false).length} aktivnih</span></div>
     </div>
     <div class="card-body">
       <form class="profile-create" data-create-profile>
@@ -3326,16 +3539,22 @@ function adminProfilesView() {
             <strong>${escapeHtml(profile.name)}</strong>
             <span>${profile.role === "admin" ? "Skrbnik" : "Uporabnik"} · ${profile.active === false ? "neaktiven" : "aktiven"}</span>
           </div>
-          ${profile.id !== currentProfile.id ? `
-            <button class="button secondary" data-reset-profile-key="${profile.id}">Ponastavi ključ</button>
-            <button class="button ${profile.active === false ? "secondary" : "danger ghost"}" data-toggle-profile="${profile.id}">
-              ${profile.active === false ? "Aktiviraj" : "Deaktiviraj"}
-            </button>
-            <button class="button danger" data-delete-profile="${profile.id}">Izbriši</button>
-          ` : `<span class="pill">Trenutni profil</span>`}
+          ${profile.id !== currentProfile.id ? profileActionMenu(profile) : `<span class="pill">Trenutni profil</span>`}
         </article>`).join("")}
       </div>
     </div>
+  </div>`;
+}
+
+function profileActionMenu(profile) {
+  const key = `profile:${profile.id}`;
+  return `<div class="row-menu-wrap">
+    <button class="icon-btn row-menu-trigger" type="button" title="Več možnosti" aria-label="Več možnosti" data-row-menu="${escapeAttr(key)}">${icon("more")}</button>
+    ${rowMenuOpen === key ? `<div class="row-menu">
+      <button type="button" data-reset-profile-key="${escapeAttr(profile.id)}">Ponastavi ključ</button>
+      <button type="button" data-toggle-profile="${escapeAttr(profile.id)}">${profile.active === false ? "Aktiviraj" : "Deaktiviraj"}</button>
+      <button class="danger-text" type="button" data-delete-profile="${escapeAttr(profile.id)}">Izbriši</button>
+    </div>` : ""}
   </div>`;
 }
 
@@ -3506,6 +3725,7 @@ function defaults(collection) {
     incomes: { ...base, amount: 0, category: "plača", source: "", account: bankAccount, note: "" },
     expenses: { ...base, amount: 0, category: "hrana", subcategory: "", account: bankAccount, kind: "variabilen", note: "" },
     transactions: { ...base, description: "", amount: 0, currency: "EUR", category: "za pregled", subcategory: "", account: revolutAccount, type: "za pregled", status: "za pregled", note: "" },
+    transfers: { ...base, description: "", amount: 0, fromAccountId: "", toAccountId: "", note: "" },
     accounts: { name: "", balance: 0, type: "glavni bančni račun", note: "" },
     investments: { ...base, type: "ETF", quantity: 0, averagePrice: 0, currentValue: 0, addedThisMonth: 0, note: "" },
     liabilities: { ...base, amount: 0, status: "odprto", category: "davki", note: "" },
@@ -3530,6 +3750,13 @@ function fieldHtml(name, type, label, value = "", options = []) {
       `<option value="${escapeAttr(account.name)}" ${account.name === value ? "selected" : ""}>${escapeHtml(account.name)} · ${money(account.balance)}</option>`
     ).join("");
     return `<label class="${cls}">${label}<select name="${name}" ${required}><option value="">Izberi račun</option>${legacyOption}${accountOptions}</select></label>`;
+  }
+  if (type === "account-id-select") {
+    const accounts = (state.accounts || []).filter(isSpendableAccount);
+    const accountOptions = accounts.map((account) =>
+      `<option value="${escapeAttr(account.id)}" ${account.id === value ? "selected" : ""}>${escapeHtml(account.name)} · ${money(account.balance)}</option>`
+    ).join("");
+    return `<label class="${cls}">${label}<select name="${name}" required><option value="">Izberi račun</option>${accountOptions}</select></label>`;
   }
   if (type === "textarea") return `<label class="${cls}">${label}<textarea name="${name}">${escapeHtml(value || "")}</textarea></label>`;
   return `<label class="${cls}">${label}<input name="${name}" type="${type}" step="0.01" value="${escapeAttr(value || "")}" ${required}></label>`;
@@ -3742,10 +3969,36 @@ function bind() {
   }));
   document.querySelectorAll("[data-action='logout']").forEach((btn) => btn.addEventListener("click", logout));
   document.querySelectorAll("[data-nav]").forEach((btn) => btn.addEventListener("click", () => setActive(btn.dataset.nav)));
-  document.querySelectorAll("[data-add]").forEach((btn) => btn.addEventListener("click", () => openModal(btn.dataset.add, btn.textContent.replace("Dodaj ", ""))));
+  document.querySelectorAll("[data-add]").forEach((btn) => btn.addEventListener("click", () => {
+    addMenuOpen = false;
+    openModal(btn.dataset.add, btn.textContent.trim());
+  }));
+  document.querySelectorAll("[data-action='toggle-add-menu']").forEach((btn) => btn.addEventListener("click", () => {
+    addMenuOpen = !addMenuOpen;
+    rowMenuOpen = "";
+    render();
+  }));
+  document.querySelectorAll("[data-row-menu]").forEach((btn) => btn.addEventListener("click", () => {
+    rowMenuOpen = rowMenuOpen === btn.dataset.rowMenu ? "" : btn.dataset.rowMenu;
+    addMenuOpen = false;
+    render();
+  }));
+  document.querySelectorAll("[data-settings-tab]").forEach((btn) => btn.addEventListener("click", () => {
+    settingsTab = btn.dataset.settingsTab;
+    render();
+  }));
+  document.querySelectorAll("[data-action='cloud-status']").forEach((btn) => btn.addEventListener("click", () => {
+    settingsTab = "sync";
+    setActive("settings");
+  }));
   document.querySelectorAll("[data-edit]").forEach((btn) => btn.addEventListener("click", () => {
     const [collection, id] = btn.dataset.edit.split(":");
-    openModal(collection, collection, state[collection].find((item) => item.id === id));
+    const item = state[collection].find((row) => row.id === id);
+    if (collection === "transactions" && item?.transferManaged) {
+      openModal("transfers", "Prenos med računi", item);
+      return;
+    }
+    openModal(collection, collection, item);
   }));
   document.querySelectorAll("[data-delete]").forEach((btn) => btn.addEventListener("click", () => {
     const [collection, id] = btn.dataset.delete.split(":");

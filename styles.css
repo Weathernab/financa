@@ -1531,6 +1531,203 @@ button:disabled {
   white-space: nowrap;
 }
 
+.top-icon svg,
+.add-main svg,
+.action-menu svg,
+.row-menu-trigger svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.action-menu-wrap,
+.row-menu-wrap {
+  position: relative;
+  z-index: 30;
+}
+
+.add-main svg {
+  width: 18px;
+  height: 18px;
+}
+
+.action-menu,
+.row-menu {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 7px);
+  right: 0;
+  min-width: 190px;
+  padding: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.38);
+}
+
+.action-menu button,
+.row-menu button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 38px;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: var(--text);
+  text-align: left;
+}
+
+.action-menu button:hover,
+.row-menu button:hover {
+  background: var(--surface-2);
+}
+
+.action-menu button span {
+  display: grid;
+  place-items: center;
+  width: 22px;
+}
+
+.danger-text {
+  color: var(--negative) !important;
+}
+
+.cloud-indicator {
+  position: relative;
+}
+
+.cloud-indicator i {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 7px;
+  height: 7px;
+  border: 2px solid var(--surface-2);
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.cloud-indicator.success i { background: var(--positive); }
+.cloud-indicator.pending i { background: var(--warning); }
+.cloud-indicator.error i { background: var(--negative); }
+
+.section-tabs,
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 14px;
+  padding: 4px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.section-tabs button,
+.settings-tabs button {
+  min-height: 38px;
+  padding: 8px 14px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.section-tabs button.active,
+.settings-tabs button.active {
+  background: var(--surface-2);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.row-menu-wrap {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.row-menu-trigger {
+  width: 34px;
+  height: 34px;
+}
+
+.row-menu {
+  top: 36px;
+}
+
+.card-inline-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings-tabs {
+  position: sticky;
+  z-index: 20;
+  top: 8px;
+  margin-bottom: 0;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(18px);
+}
+
+.settings-action-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.settings-embedded-import {
+  display: grid;
+  gap: 14px;
+}
+
+.table-wrap th:last-child,
+.table-wrap td:last-child {
+  position: sticky;
+  z-index: 5;
+  right: 0;
+  width: 46px;
+  padding-left: 6px;
+  padding-right: 6px;
+  background: var(--surface);
+}
+
+.table-wrap .row-menu {
+  top: 36px;
+  right: 0;
+}
+
+.profile-admin,
+.goal-card {
+  overflow: visible;
+}
+
+@media (max-width: 860px) {
+  .add-main span {
+    display: none;
+  }
+
+  .add-main {
+    width: 42px;
+    padding: 0;
+  }
+
+  .settings-tabs,
+  .section-tabs {
+    scrollbar-width: none;
+  }
+
+  .settings-tabs::-webkit-scrollbar,
+  .section-tabs::-webkit-scrollbar {
+    display: none;
+  }
+}
+
 @media (max-width: 1320px) {
   .metrics {
     grid-template-columns: repeat(6, minmax(112px, 1fr));
