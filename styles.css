@@ -1717,6 +1717,13 @@ button:disabled {
     padding: 0;
   }
 
+  .action-menu {
+    right: auto;
+    left: 0;
+    width: min(220px, calc(100vw - 28px));
+    min-width: 0;
+  }
+
   .settings-tabs,
   .section-tabs {
     scrollbar-width: none;
