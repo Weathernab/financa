@@ -1964,7 +1964,7 @@ function upsertIncome(clean, syncTransaction = false) {
     id: clean.id || crypto.randomUUID(),
     date: clean.date || existing?.date || iso(currentYear, currentMonth, now.getDate()),
     amount: Math.abs(Number(clean.amount || 0)),
-    incomeType: clean.incomeType || existing?.incomeType || (isRegresIncome(clean) ? "izreden" : "reden"),
+    incomeType: isRegresIncome(clean) ? "sezonski" : clean.incomeType || existing?.incomeType || "reden",
     balanceAccountId: "",
     balanceImpact: 0,
   };
@@ -2767,6 +2767,7 @@ function closeMonth(values) {
   state.monthClosures = [{
     id: crypto.randomUUID(), month, year, closedAt: new Date().toISOString(),
     analytics: {
+      version: 2,
       incomeTotal: analytics.incomeTotal,
       expenseTotal: analytics.expenseTotal,
       saved: analytics.saved,
@@ -2795,8 +2796,8 @@ function noteHtml(note) {
 }
 
 function analyticsView() {
-  const months = recordedActivityMonths(6);
   const completedMonths = completedActivityMonths(6);
+  const months = completedMonths;
   const monthData = completedMonths.map(([month, year]) => analyticsMonthlyData(month, year));
   const incomeSeries = months.map(([m, y]) => [monthLabel(m, y), recurringIncomeTotal(m, y)]);
   const expenseSeries = months.map(([m, y]) => [monthLabel(m, y), analyticsMonthlyData(m, y).expenseTotal]);
@@ -2804,11 +2805,15 @@ function analyticsView() {
     const d = analyticsMonthlyData(m, y);
     return [monthLabel(m, y), d.savingsRate];
   }).filter(([, rate], index) => recurringIncomeTotal(months[index][0], months[index][1]) > 0);
-  const nwSeries = netWorthHistory().map((s) => [monthLabel(s.month, s.year), s.netWorth]);
+  const completedKeys = new Set(completedMonths.map(([month, year]) => `${year}-${pad(month)}`));
+  const nwSeries = netWorthHistory().filter((s) => completedKeys.has(`${s.year}-${pad(s.month)}`)).map((s) => [monthLabel(s.month, s.year), s.netWorth]);
   const averageIncome = average(monthData.map((item) => item.incomeTotal));
   const averageExpenses = average(monthData.map((item) => item.expenseTotal));
   const averageSavings = average(monthData.map((item) => item.saved));
-  const structure = analyticsExpenseEntries(filters.month, filters.year, "kind");
+  const latestCompleted = completedMonths[completedMonths.length - 1];
+  const focusMonth = latestCompleted?.[0] || filters.month;
+  const focusYear = latestCompleted?.[1] || filters.year;
+  const structure = analyticsExpenseEntries(focusMonth, focusYear, "kind");
   return `<section class="grid metrics">
     ${metricCard(["Povp. redni prihodki", averageIncome, `${completedMonths.length} zaključenih mesecev · brez regresa`, "positive"])}
     ${metricCard(["Povp. stroški", averageExpenses, `${completedMonths.length} zaključenih mesecev`, "negative"])}
@@ -2820,15 +2825,15 @@ function analyticsView() {
     <div class="card"><div class="card-header"><h3>Stroški po mesecih</h3></div><div class="card-body">${trendChart(expenseSeries)}</div></div>
     <div class="card"><div class="card-header"><h3>Savings rate</h3></div><div class="card-body">${trendChart(savingsSeries, "%")}</div></div>
     <div class="card"><div class="card-header"><h3>Net worth</h3></div><div class="card-body">${trendChart(nwSeries)}</div></div>
-    <div class="card"><div class="card-header"><h3>Stroški po kategorijah</h3><span class="pill">${monthLabel(filters.month, filters.year)}</span></div><div class="card-body">${bars(analyticsExpenseEntries(filters.month, filters.year, "category"))}</div></div>
-    <div class="card"><div class="card-header"><h3>Struktura stroškov</h3><span class="pill">${monthLabel(filters.month, filters.year)}</span></div><div class="card-body">${donutChart(structure)}</div></div>
+    <div class="card"><div class="card-header"><h3>Stroški po kategorijah</h3><span class="pill">${latestCompleted ? monthLabel(focusMonth, focusYear) : "ni zaključenih mesecev"}</span></div><div class="card-body">${bars(analyticsExpenseEntries(focusMonth, focusYear, "category"))}</div></div>
+    <div class="card"><div class="card-header"><h3>Struktura stroškov</h3><span class="pill">${latestCompleted ? monthLabel(focusMonth, focusYear) : "ni zaključenih mesecev"}</span></div><div class="card-body">${donutChart(structure)}</div></div>
   </section>
   <section class="analytics-deep" style="margin-top:14px">
-    <div class="card"><div class="card-header"><h3>Forecast</h3><span class="pill">3 / 6 / 12 mesecev</span></div><div class="card-body">${forecastHtml(months)}</div></div>
+    <div class="card"><div class="card-header"><h3>Napoved denarnega toka</h3><span class="pill">3 / 6 / 12 mesecev</span></div><div class="card-body">${forecastHtml()}</div></div>
     <div class="card"><div class="card-header"><h3>Priporočena razporeditev</h3><span class="pill">zaključeni meseci</span></div><div class="card-body">${allocationGuidanceHtml()}</div></div>
   </section>
   <section class="card" style="margin-top:14px">
-    <div class="card-header"><h3>Priložnosti za zmanjšanje porabe</h3><span class="pill">${completedMonths.length >= 3 ? "zadnji 3 zaključeni meseci" : "preliminarno"}</span></div>
+    <div class="card-header"><h3>Priložnosti za zmanjšanje porabe</h3><span class="pill">${completedMonths.length >= 3 ? "zadnji 3 zaključeni meseci" : "potrebni so 3 meseci"}</span></div>
     <div class="card-body">${spendingRecommendationsHtml()}</div>
   </section>
   <section class="grid two-col" style="margin-top:14px">
@@ -2860,7 +2865,7 @@ function monthComparisonHtml() {
 
 function expenseAnomaliesHtml() {
   const months = completedActivityMonths(6);
-  if (months.length < 2) return `<div class="empty">Za zaznavanje odstopanj sta potrebna vsaj dva zaključena meseca.</div>`;
+  if (months.length < 3) return `<div class="empty">Za zaznavanje odstopanj so potrebni vsaj trije zaključeni meseci.</div>`;
   const [latestMonth, latestYear] = months[months.length - 1];
   const history = months.slice(0, -1).slice(-3);
   const current = new Map(analyticsExpenseEntries(latestMonth, latestYear, "category"));
@@ -2869,14 +2874,17 @@ function expenseAnomaliesHtml() {
     const baseline = average(history.map(([month, year]) => analyticsExpenseCategoryTotal(month, year, category)));
     const value = Number(current.get(category) || 0);
     const increase = value - baseline;
-    return { category, value, baseline, increase, ratio: baseline > 0 ? value / baseline : value > 50 ? Infinity : 1 };
-  }).filter((item) => item.increase >= 30 && item.ratio >= 1.3).sort((a, b) => b.increase - a.increase);
+    const ratio = baseline > 0 ? value / baseline : value > 50 ? Infinity : 1;
+    return { category, value, baseline, increase, ratio };
+  }).filter((item) => Math.abs(item.increase) >= 30 && (item.ratio >= 1.3 || item.ratio <= 0.7)).sort((a, b) => Math.abs(b.increase) - Math.abs(a.increase));
   if (!anomalies.length) return `<div class="notice-good">V zadnjem zaključenem mesecu ni večjih odstopanj.</div>`;
-  return `<div class="recommendation-list">${anomalies.map((item) => `<div class="recommendation"><div><strong>${escapeHtml(item.category)}</strong><span>${money(item.value)} proti povprečju ${money(item.baseline)}</span></div><b class="negative">+${money(item.increase)}</b></div>`).join("")}</div>`;
+  return `<div class="recommendation-list">${anomalies.map((item) => `<div class="recommendation ${item.increase < 0 ? "good" : ""}"><div><strong>${escapeHtml(item.category)}</strong><span>${money(item.value)} proti povprečju ${money(item.baseline)}</span></div><b class="${item.increase >= 0 ? "negative" : "positive"}">${signed(item.increase)}</b></div>`).join("")}</div>
+  <p class="analysis-note">Odstopanje se označi, ko je zadnji zaključeni mesec najmanj 30 € in 30 % nad ali pod povprečjem prejšnjih mesecev.</p>`;
 }
 
 function incomeClassificationHtml() {
   const months = completedActivityMonths(6).slice(-3);
+  if (!months.length) return `<div class="empty">Razčlenitev bo na voljo po prvem zaključenem mesecu.</div>`;
   const rows = ["reden", "sezonski", "izreden"].map((type) => [
     type,
     months.reduce((total, [month, year]) => {
@@ -2884,7 +2892,10 @@ function incomeClassificationHtml() {
       return total + Number(value || 0);
     }, 0),
   ]);
-  return bars(rows);
+  const total = rows.reduce((sum, [, value]) => sum + value, 0);
+  const regular = Number(rows.find(([type]) => type === "reden")?.[1] || 0);
+  const regularShare = total ? regular / total * 100 : 0;
+  return `${bars(rows)}<p class="analysis-note">Redni prihodki predstavljajo ${NUMBER.format(regularShare)} % vseh prihodkov v obdobju. Regres je vedno uvrščen med sezonske prihodke in ne vpliva na mesečno povprečje ali napoved.</p>`;
 }
 
 function analysisTargetsHtml() {
@@ -2911,8 +2922,9 @@ function isRegresIncome(item) {
 }
 
 function incomeClassification(item) {
+  if (isRegresIncome(item)) return "sezonski";
   if (["reden", "sezonski", "izreden"].includes(item?.incomeType)) return item.incomeType;
-  return isRegresIncome(item) ? "izreden" : "reden";
+  return "reden";
 }
 
 function recurringIncomeTotal(month, year) {
@@ -2923,7 +2935,11 @@ function analyticsMonthlyData(month, year, { ignoreClosure = false } = {}) {
   const closure = !ignoreClosure ? monthClosure(month, year) : null;
   const data = monthlyData(month, year);
   if (closure?.analytics) {
-    return { ...data, ...closure.analytics, locked: true };
+    if (Number(closure.analytics.version || 0) >= 2) return { ...data, ...closure.analytics, locked: true };
+    const incomeTotal = recurringIncomeTotal(month, year);
+    const expenseTotal = Number(closure.analytics.expenseTotal ?? data.expenseTotal);
+    const saved = incomeTotal - expenseTotal;
+    return { ...data, ...closure.analytics, incomeTotal, expenseTotal, saved, savingsRate: incomeTotal ? saved / incomeTotal * 100 : 0, locked: true };
   }
   const incomeTotal = recurringIncomeTotal(month, year);
   const saved = incomeTotal - data.expenseTotal;
@@ -2962,7 +2978,7 @@ function analyticsRecurringExpenseTotal(month, year) {
 
 function analyticsIncomeTypeEntries(month, year) {
   const closure = monthClosure(month, year);
-  if (Array.isArray(closure?.analytics?.incomeByType)) return closure.analytics.incomeByType;
+  if (Number(closure?.analytics?.version || 0) >= 2 && Array.isArray(closure.analytics.incomeByType)) return closure.analytics.incomeByType;
   const incomes = state.incomes.filter((item) => sameMonth(item, "date", month, year));
   return ["reden", "sezonski", "izreden"].map((type) => [type, sum(incomes.filter((item) => incomeClassification(item) === type))]);
 }
@@ -2972,14 +2988,17 @@ function forecastHtml() {
   if (months.length < 3) {
     return `<div class="empty">Forecast bo na voljo po treh zaključenih mesecih. Trenutno jih je ${months.length}.</div>`;
   }
-  const recent = months.slice(-3).map(([month, year]) => analyticsMonthlyData(month, year));
+  const recent = months.slice(-6).map(([month, year]) => analyticsMonthlyData(month, year));
   const monthlyIncome = average(recent.map((item) => item.incomeTotal));
   const monthlyExpenses = average(recent.map((item) => item.expenseTotal));
   const monthlySurplus = monthlyIncome - monthlyExpenses;
+  const historicalSurpluses = recent.map((item) => item.saved);
+  const lowMonthly = Math.min(...historicalSurpluses);
+  const highMonthly = Math.max(...historicalSurpluses);
   return `<div class="forecast-grid">
-    ${[3, 6, 12].map((period) => `<div><span>Čez ${period} mesecev</span><strong class="${monthlySurplus >= 0 ? "positive" : "negative"}">${money(monthlySurplus * period)}</strong><small>ocenjeni kumulativni presežek</small></div>`).join("")}
-    <div><span>Pričakovani mesečni stroški</span><strong>${money(monthlyExpenses)}</strong><small>povprečje zadnjih 3 zaključenih mesecev</small></div>
-  </div>`;
+    ${[3, 6, 12].map((period) => `<div><span>Čez ${period} mesecev</span><strong class="${monthlySurplus >= 0 ? "positive" : "negative"}">${money(monthlySurplus * period)}</strong><small>zgodovinski razpon ${money(lowMonthly * period)} do ${money(highMonthly * period)}</small></div>`).join("")}
+    <div><span>Pričakovani mesečni stroški</span><strong>${money(monthlyExpenses)}</strong><small>povprečje ${recent.length} zaključenih mesecev</small></div>
+  </div><p class="analysis-note">Napoved uporablja samo redne prihodke in zaključene mesece. Razpon ni jamstvo, ampak pokaže najboljši in najslabši zgodovinski scenarij v uporabljenem obdobju.</p>`;
 }
 
 function trackedMonthsLabel(count) {
@@ -3040,7 +3059,7 @@ function accountAllocation() {
 
 function spendingRecommendationsHtml() {
   const months = completedActivityMonths(6);
-  if (!months.length) return `<div class="empty">Za priporočila najprej evidentiraj vsaj en mesec stroškov.</div>`;
+  if (months.length < 3) return `<div class="empty">Priporočila bodo na voljo po treh zaključenih mesecih. Trenutno jih je ${months.length}.</div>`;
   const sampleMonths = months.slice(-3);
   const monthlyExpense = average(sampleMonths.map(([month, year]) => analyticsRecurringExpenseTotal(month, year)));
   if (!monthlyExpense) return `<div class="empty">V izbranem obdobju ni stroškov.</div>`;
@@ -3057,13 +3076,16 @@ function spendingRecommendationsHtml() {
     if (target.category && share > 0) thresholds.set(target.category, share);
   }
   const categories = new Set(sampleMonths.flatMap(([month, year]) => analyticsRecurringExpenseEntries(month, year).map(([category]) => category)));
-  const categoryMonthly = [...categories].map((category) => [category, average(sampleMonths.map(([month, year]) => Number(analyticsRecurringExpenseEntries(month, year).find(([name]) => name === category)?.[1] || 0)))]);
+  const categoryMonthly = [...categories].map((category) => {
+    const values = sampleMonths.map(([month, year]) => Number(analyticsRecurringExpenseEntries(month, year).find(([name]) => name === category)?.[1] || 0));
+    return [category, average(values), values.filter((value) => value > 0).length];
+  });
   const suggestions = categoryMonthly
-    .map(([category, value]) => {
+    .map(([category, value, activeMonths]) => {
       const targetShare = thresholds.get(category);
-      if (!targetShare || value <= monthlyExpense * targetShare) return null;
+      if (!targetShare || activeMonths < 2 || value <= monthlyExpense * targetShare) return null;
       const saving = value - monthlyExpense * targetShare;
-      return { category, value, saving, share: value / monthlyExpense * 100 };
+      return { category, value, saving, share: value / monthlyExpense * 100, activeMonths };
     })
     .filter(Boolean)
     .sort((a, b) => b.saving - a.saving);
@@ -3071,7 +3093,7 @@ function spendingRecommendationsHtml() {
     return `<div class="recommendation-list"><div class="recommendation good"><strong>Poraba je uravnotežena</strong><span>V pregledanih kategorijah ni izrazitega preseganja orientacijskih deležev.</span></div></div>`;
   }
   return `<div class="recommendation-list">${suggestions.map((item) => `<div class="recommendation">
-    <div><strong>${escapeHtml(item.category)}</strong><span>${NUMBER.format(item.share)} % mesečne porabe · povprečno ${money(item.value)}</span></div>
+    <div><strong>${escapeHtml(item.category)}</strong><span>${NUMBER.format(item.share)} % mesečne porabe · povprečno ${money(item.value)} · prisotno ${item.activeMonths}/3 mesecev</span></div>
     <b>Možen prihranek ${money(item.saving)} / mesec</b>
   </div>`).join("")}</div>
   <p class="analysis-note">Metoda primerja povprečje največ zadnjih treh zaključenih mesecev s tvojimi ciljnimi deleži. Kjer lastnega cilja ni, se uporabijo orientacijski privzeti pragovi. Možen prihranek je znesek nad izbranim pragom.</p>`;
