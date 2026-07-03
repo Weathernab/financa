@@ -176,6 +176,32 @@ body {
   color: var(--text);
 }
 
+.recurring-expense-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 220px);
+  align-items: end;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(36, 214, 176, 0.045);
+}
+
+.recurring-expense-option .toggle-row span {
+  display: grid;
+  gap: 3px;
+}
+
+.recurring-expense-option .toggle-row small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.recurring-expense-option [hidden] {
+  display: none;
+}
+
 [data-theme="light"] body {
   background: linear-gradient(135deg, #edf3f8 0%, #f7f9fc 46%, #e7eef7 100%);
 }
@@ -1903,7 +1929,8 @@ button:disabled {
   }
 
   .budget-grid,
-  .quick-entry-grid {
+  .quick-entry-grid,
+  .recurring-expense-option {
     grid-template-columns: 1fr;
   }
 
@@ -1953,22 +1980,28 @@ button:disabled {
     overflow: visible;
     border: 0;
     border-radius: 0;
+    backdrop-filter: none;
   }
 
   .sidebar {
-    position: sticky;
+    position: fixed;
     z-index: 100;
-    top: 0;
-    height: auto;
-    padding: calc(8px + env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) 9px max(10px, env(safe-area-inset-left));
-    border-bottom: 1px solid var(--line-strong);
-    border-top: 0;
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: calc(72px + env(safe-area-inset-bottom));
+    padding: 8px max(10px, env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+    border-top: 1px solid var(--line-strong);
+    border-bottom: 0;
     border-right: 0;
     overflow-x: auto;
     overflow-y: hidden;
-    background: linear-gradient(180deg, rgba(12, 19, 29, 0.98), rgba(8, 13, 20, 0.92));
-    box-shadow: 0 16px 34px rgba(0, 0, 0, 0.28);
+    background: linear-gradient(180deg, rgba(8, 13, 20, 0.94), rgba(12, 19, 29, 0.99));
+    box-shadow: 0 -16px 34px rgba(0, 0, 0, 0.28);
     backdrop-filter: blur(22px);
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
   }
 
@@ -2029,7 +2062,11 @@ button:disabled {
   }
 
   .main {
-    padding: 14px 14px calc(22px + env(safe-area-inset-bottom));
+    padding: 14px 14px calc(96px + env(safe-area-inset-bottom));
+  }
+
+  .modal-backdrop {
+    z-index: 200;
   }
 
   .topbar {

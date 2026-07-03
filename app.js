@@ -335,6 +335,7 @@ let profileRegistrySupported = null;
 let cloudStatus = { state: "local", message: "Podatki so shranjeni lokalno." };
 let lastCloudPayload = "";
 let deferredInstallPrompt = null;
+let mobileNavScrollLeft = 0;
 
 const requestedView = new URLSearchParams(location.search).get("view");
 if (currentProfile && navItems.some(([id]) => id === requestedView)) {
@@ -1575,8 +1576,13 @@ function upsert(collection, values) {
     return;
   }
   if (collection === "expenses") {
+    const makeRecurring = clean.makeRecurring === "da";
+    const recurringDay = Number(clean.recurringDay || String(clean.date || "").slice(8, 10) || 1);
+    delete clean.makeRecurring;
+    delete clean.recurringDay;
     const savedExpense = upsertExpense(clean, true);
     replaceOrInsertRecord("expenses", savedExpense);
+    if (makeRecurring) upsertRecurringRuleFromExpense(savedExpense, recurringDay);
     focusFiltersOnExpense(savedExpense);
     save();
     closeModal();
@@ -1877,6 +1883,28 @@ function upsertIncome(clean, syncTransaction = false) {
   return row;
 }
 
+function upsertRecurringRuleFromExpense(expense, day) {
+  const existing = (state.recurringTransactions || []).find((item) =>
+    item.kind === "strošek"
+    && normalizeText(item.name) === normalizeText(expense.name)
+    && normalizeText(item.account) === normalizeText(expense.account)
+  );
+  const rule = {
+    ...(existing || {}),
+    id: existing?.id || crypto.randomUUID(),
+    kind: "strošek",
+    name: expense.name,
+    amount: Math.abs(Number(expense.amount || 0)),
+    category: expense.category || "drugo",
+    account: expense.account || "",
+    day: Math.max(1, Math.min(31, Number(day || 1))),
+    active: "aktivno",
+    note: expense.note || "Ustvarjeno ob vnosu stroška",
+  };
+  replaceOrInsertRecord("recurringTransactions", rule);
+  return rule;
+}
+
 function deleteExpenseRecord(id, removeTransaction = false) {
   const expense = (state.expenses || []).find((item) => item.id === id);
   if (!expense) return;
@@ -2059,10 +2087,12 @@ function removeItem(collection, id) {
 }
 
 function numericField(key) {
-  return ["amount", "balance", "quantity", "averagePrice", "currentValue", "addedThisMonth", "targetAmount", "currentAmount", "monthlyAmount", "targetShare", "day", "month", "year", "assets", "liabilities", "netWorth"].includes(key);
+  return ["amount", "balance", "quantity", "averagePrice", "currentValue", "addedThisMonth", "targetAmount", "currentAmount", "monthlyAmount", "targetShare", "day", "recurringDay", "month", "year", "assets", "liabilities", "netWorth"].includes(key);
 }
 
 function render() {
+  const previousSidebar = document.querySelector(".sidebar");
+  if (previousSidebar) mobileNavScrollLeft = previousSidebar.scrollLeft;
   if (!currentProfile) {
     document.getElementById("app").innerHTML = loginView();
     bind();
@@ -2121,6 +2151,12 @@ function render() {
     ${modal ? modalHtml() : ""}
   `;
   bind();
+  const currentSidebar = document.querySelector(".sidebar");
+  if (currentSidebar) {
+    requestAnimationFrame(() => {
+      currentSidebar.scrollLeft = mobileNavScrollLeft;
+    });
+  }
 }
 
 function loginView() {
@@ -2156,6 +2192,7 @@ function addActionMenu() {
     ["quickEntry", "Hitri vnos", "plus"],
     ["incomes", "Prihodek", "arrowUp"],
     ["expenses", "Strošek", "arrowDown"],
+    ["recurringTransactions", "Ponavljajoči vnos", "calendarCheck"],
     ["transfers", "Prenos", "sync"],
     ["investments", "Investicija", "trend"],
     ["liabilities", "Obveznost", "calendar"],
@@ -2315,11 +2352,11 @@ function transactionsView() {
     ${countCard("Uvoženo", state.transactions.length, "vse transakcije", "positive")}
     ${countCard("Transferji", state.transactions.filter((t) => t.status === "interni transfer").length, "ne vplivajo na porabo", "warning")}
   </section>
+  ${recurringTransactionsView()}
   <section class="grid two-col" style="margin-top:18px">
     <div class="card"><div class="card-header"><h3>Za pregled</h3><span class="pill">${review.length} odprtih</span></div><div class="card-body table-wrap">${modernTransactionsTable(review)}</div></div>
     <div class="card"><div class="card-header"><h3>Vse transakcije</h3></div><div class="card-body table-wrap">${modernTransactionsTable(ready)}</div></div>
-  </section>
-  ${recurringTransactionsView()}`;
+  </section>`;
 }
 
 function recurringTransactionsView() {
@@ -4110,9 +4147,23 @@ function modalHtml() {
       <div class="modal-body form-grid">
         <input type="hidden" name="id" value="${current.id || ""}">
         ${fields[modal.collection].map(([name, type, label, options]) => fieldHtml(name, type, label, current[name], options)).join("")}
+        ${modal.collection === "expenses" && !modal.item ? recurringExpenseOptionHtml(current) : ""}
       </div>
       <div class="modal-foot"><button type="button" class="button secondary" data-action="close">Prekliči</button><button class="button" type="submit">Shrani</button></div>
     </form>
+  </div>`;
+}
+
+function recurringExpenseOptionHtml(current) {
+  const day = Math.max(1, Math.min(31, Number(String(current.date || "").slice(8, 10)) || now.getDate()));
+  return `<div class="recurring-expense-option full">
+    <label class="toggle-row">
+      <input type="checkbox" name="makeRecurring" value="da" data-recurring-expense-toggle>
+      <span><strong>Ponavljajoči strošek</strong><small>Po shranjevanju ustvari tudi mesečno pravilo.</small></span>
+    </label>
+    <label data-recurring-expense-day hidden>Dan v mesecu
+      <input type="number" name="recurringDay" min="1" max="31" step="1" value="${day}" disabled>
+    </label>
   </div>`;
 }
 
@@ -4517,6 +4568,12 @@ async function forceSyncProfiles() {
 }
 
 function bind() {
+  const mobileSidebar = document.querySelector(".sidebar");
+  if (mobileSidebar) {
+    mobileSidebar.addEventListener("scroll", () => {
+      mobileNavScrollLeft = mobileSidebar.scrollLeft;
+    }, { passive: true });
+  }
   document.querySelectorAll("[data-login-form]").forEach((form) => form.addEventListener("submit", async (event) => {
     event.preventDefault();
     await loginWithKey(new FormData(form).get("key"));
@@ -4573,6 +4630,15 @@ function bind() {
   document.querySelectorAll("[data-close-month-form]").forEach((form) => form.addEventListener("submit", (event) => {
     event.preventDefault();
     closeMonth(Object.fromEntries(new FormData(form).entries()));
+  }));
+  document.querySelectorAll("[data-recurring-expense-toggle]").forEach((toggle) => toggle.addEventListener("change", () => {
+    const container = toggle.closest(".recurring-expense-option");
+    const dayField = container?.querySelector("[data-recurring-expense-day]");
+    const dayInput = dayField?.querySelector("input");
+    if (!dayField || !dayInput) return;
+    dayField.hidden = !toggle.checked;
+    dayInput.disabled = !toggle.checked;
+    if (toggle.checked) dayInput.focus();
   }));
   document.querySelectorAll("[data-quick-entry-form]").forEach((form) => form.addEventListener("submit", (event) => {
     event.preventDefault();
