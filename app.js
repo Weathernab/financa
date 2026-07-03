@@ -327,6 +327,7 @@ let importFilter = "all";
 let filters = { month: currentMonth, year: currentYear, category: "", source: "", account: "" };
 let cloudReady = false;
 let cloudSaveTimer = null;
+let cloudRetryTimer = null;
 let cloudSyncInFlight = false;
 let cloudAutoSyncPaused = false;
 let cloudPendingSave = false;
@@ -637,6 +638,7 @@ function loadState() {
   try {
     const loaded = { ...emptyState(), ...JSON.parse(raw) };
     loaded.settings = { ...seedData.settings, ...(loaded.settings || {}) };
+    normalizeStateDateFields(loaded);
     cleanupLegacySeedData(loaded);
     cleanupInvalidEmptyEntries(loaded);
     ensureUniqueRecordIds(loaded);
@@ -945,7 +947,34 @@ function save({ touch = true } = {}) {
   document.documentElement.dataset.theme = state.settings.theme || "dark";
   const themeMeta = document.querySelector('meta[name="theme-color"]');
   if (themeMeta) themeMeta.content = state.settings.theme === "light" ? "#eef3f8" : "#07101c";
-  if (touch) queueCloudSave();
+  if (touch) {
+    markCloudSavePending();
+    queueCloudSave();
+  }
+}
+
+function cloudPendingStorageKey() {
+  return `financa-cloud-pending:${currentProfile?.id || "unknown"}`;
+}
+
+function markCloudSavePending() {
+  if (!currentProfile) return;
+  localStorage.setItem(cloudPendingStorageKey(), state.meta?.updatedAt || new Date().toISOString());
+  cloudPendingSave = true;
+}
+
+function clearCloudSavePending() {
+  if (!currentProfile) return;
+  localStorage.removeItem(cloudPendingStorageKey());
+  cloudPendingSave = false;
+}
+
+function hasPendingCloudSave() {
+  if (!currentProfile) return false;
+  if (localStorage.getItem(cloudPendingStorageKey())) return true;
+  const localUpdated = timestampValue(state.meta?.updatedAt);
+  const lastSync = timestampValue(currentProfileLastSync());
+  return Boolean(hasMeaningfulFinancialData(state) && localUpdated && localUpdated > lastSync + 1000);
 }
 
 function googleSheetsConfig() {
@@ -1029,21 +1058,39 @@ function googleSheetsEndpointError(endpoint) {
 
 function queueCloudSave() {
   const config = googleSheetsConfig();
-  if (!cloudReady || cloudAutoSyncPaused || !canUseCloudEndpoint(config)) return;
+  if (cloudAutoSyncPaused || !canUseCloudEndpoint(config)) return;
   if (!canAuthenticateCloud(config)) {
     cloudStatus = { state: "error", message: "Vnesi dejanski sinhronizacijski ključ, ne besedila TUKAJ_VNESI ..." };
     return;
   }
   const payload = cloudPayload();
-  if (payload === lastCloudPayload) return;
+  if (payload === lastCloudPayload && !hasPendingCloudSave()) return;
   cloudPendingSave = true;
+  if (!cloudReady) {
+    cloudStatus = { state: "pending", message: "Sprememba je shranjena lokalno in čaka na povezavo z Google Sheets." };
+    return;
+  }
   if (cloudSyncInFlight) {
     cloudStatus = { state: "pending", message: "Spremembe čakajo na konec trenutne sinhronizacije." };
     return;
   }
   clearTimeout(cloudSaveTimer);
   cloudStatus = { state: "pending", message: "Shranjujem spremembe v Google Sheets ..." };
-  cloudSaveTimer = setTimeout(() => pushGoogleSheets({ quiet: true }), 150);
+  cloudSaveTimer = setTimeout(() => pushGoogleSheets({ quiet: true }), 250);
+}
+
+function retryableCloudError(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  return navigator.onLine !== false && ["odzval", "povezava", "fetch", "network", "timeout", "http 5"].some((part) => message.includes(part));
+}
+
+function scheduleCloudRetry() {
+  clearTimeout(cloudRetryTimer);
+  cloudRetryTimer = setTimeout(() => {
+    cloudRetryTimer = null;
+    cloudAutoSyncPaused = false;
+    queueCloudSave();
+  }, 5000);
 }
 
 async function sendCloudRequest(request) {
@@ -1236,6 +1283,7 @@ async function pullGoogleSheets({ confirmOverwrite = false, quiet = false } = {}
     };
     saveBackendConfig();
     lastCloudPayload = cloudPayload();
+    clearCloudSavePending();
     localStorage.setItem(profileStorageKey(), JSON.stringify(state));
     cloudStatus = { state: "success", message: `Preneseno za profil "${currentProfile.id}": ${syncDataSummary(imported)}.` };
     return true;
@@ -1262,6 +1310,8 @@ async function pushGoogleSheets({ confirmOverwrite = false, quiet = false } = {}
   cloudSyncInFlight = true;
   cloudPendingSave = false;
   clearTimeout(cloudSaveTimer);
+  clearTimeout(cloudRetryTimer);
+  let retryScheduled = false;
   if (!quiet) {
     cloudStatus = { state: "pending", message: "Shranjujem v Google Sheets ..." };
     render();
@@ -1285,16 +1335,20 @@ async function pushGoogleSheets({ confirmOverwrite = false, quiet = false } = {}
       [currentProfile.id]: result.updatedAt || new Date().toISOString(),
     };
     saveBackendConfig();
+    clearCloudSavePending();
     localStorage.setItem(profileStorageKey(), JSON.stringify(state));
     cloudStatus = { state: "success", message: `Sinhronizirano ${formatSyncTime(backendConfig.lastSyncByProfile[currentProfile.id])}.` };
     return true;
   } catch (error) {
-    cloudAutoSyncPaused = true;
+    markCloudSavePending();
+    retryScheduled = retryableCloudError(error);
+    cloudAutoSyncPaused = !retryScheduled;
     cloudStatus = { state: "error", message: error.message || "Shranjevanje ni uspelo." };
+    if (retryScheduled) scheduleCloudRetry();
     return false;
   } finally {
     cloudSyncInFlight = false;
-    if (cloudPendingSave && !cloudAutoSyncPaused) {
+    if (cloudPendingSave && !cloudAutoSyncPaused && !retryScheduled) {
       setTimeout(() => queueCloudSave(), 0);
     }
     render();
@@ -1343,16 +1397,34 @@ async function initializeGoogleSheetsSync() {
     if (currentProfile?.role === "admin" && canAuthenticateCloud(config)) {
       await pullProfileRegistry();
     }
-    const loaded = await pullGoogleSheets({ quiet: true });
     cloudReady = true;
+    if (hasPendingCloudSave()) {
+      const freshness = await remoteFreshness();
+      if (freshness.isNewer) {
+        cloudAutoSyncPaused = true;
+        cloudStatus = { state: "error", message: `Google Sheets je novejši od lokalnih sprememb (${formatSyncTime(freshness.updatedAt)}). Samodejno prepisovanje je ustavljeno.` };
+        render();
+        return;
+      }
+      await pushGoogleSheets({ quiet: true });
+      return;
+    }
+    const loaded = await pullGoogleSheets({ quiet: true });
     if (loaded === false) {
       cloudAutoSyncPaused = false;
       cloudStatus = { state: "local", message: "Google Sheets je povezan. Ta profil še nima podatkov v backendu; prvi vnos jih bo ustvaril samodejno." };
       render();
     }
   } catch (error) {
-    cloudStatus = { state: "error", message: error.message || "Začetna sinhronizacija z Google Sheets ni uspela." };
     cloudReady = true;
+    if (hasPendingCloudSave() && retryableCloudError(error)) {
+      cloudAutoSyncPaused = false;
+      cloudStatus = { state: "pending", message: "Lokalne spremembe čakajo na ponovno povezavo z Google Sheets." };
+      scheduleCloudRetry();
+    } else {
+      cloudAutoSyncPaused = true;
+      cloudStatus = { state: "error", message: error.message || "Začetna sinhronizacija z Google Sheets ni uspela." };
+    }
     render();
   }
 }
@@ -1490,6 +1562,7 @@ function importedState(data) {
     if (!Array.isArray(next[key])) next[key] = [];
   }
   next.settings = { ...seedData.settings, ...(data.settings || {}) };
+  normalizeStateDateFields(next);
   cleanupInvalidEmptyEntries(next);
   cleanupLegacySeedData(next);
   ensureUniqueRecordIds(next);
@@ -1501,6 +1574,30 @@ function importedState(data) {
     next.settings.setupCompleted = Boolean(next.accounts.length || next.liabilities.length || next.snapshots.length);
   }
   return next;
+}
+
+function normalizeDateValue(value) {
+  if (!value) return "";
+  const raw = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return raw.slice(0, 10);
+  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())}`;
+}
+
+function normalizeStateDateFields(data) {
+  for (const [collection, definitions] of Object.entries(fields)) {
+    if (!Array.isArray(data[collection])) continue;
+    const dateKeys = definitions.filter(([, type]) => type === "date").map(([name]) => name);
+    if (!dateKeys.length) continue;
+    data[collection] = data[collection].map((item) => {
+      const normalized = { ...item };
+      for (const key of dateKeys) {
+        if (normalized[key]) normalized[key] = normalizeDateValue(normalized[key]);
+      }
+      return normalized;
+    });
+  }
 }
 
 function upcomingLiabilities() {
@@ -4364,6 +4461,7 @@ function fieldHtml(name, type, label, value = "", options = []) {
     return `<label class="${cls}">${label}<select name="${name}" required><option value="">Izberi račun</option>${accountOptions}</select></label>`;
   }
   if (type === "textarea") return `<label class="${cls}">${label}<textarea name="${name}">${escapeHtml(value || "")}</textarea></label>`;
+  if (type === "date") return `<label class="${cls}">${label}<input name="${name}" type="date" value="${escapeAttr(normalizeDateValue(value))}" ${required}></label>`;
   return `<label class="${cls}">${label}<input name="${name}" type="${type}" step="0.01" value="${escapeAttr(value || "")}" ${required}></label>`;
 }
 
@@ -4703,6 +4801,7 @@ function bind() {
       cloudAutoSyncPaused = false;
       lastCloudPayload = cloudPayload();
       cloudStatus = { state: "success", message: "Povezava je preverjena. Profile sinhroniziraj loceno; podatke prenesi ali poslji rocno." };
+      if (hasPendingCloudSave()) queueCloudSave();
       render();
     } catch {
       cloudReady = true;

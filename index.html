@@ -13,7 +13,7 @@
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icons/icon-192.png" sizes="192x192" />
     <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
-    <link rel="stylesheet" href="./styles.css?v=50" />
+    <link rel="stylesheet" href="./styles.css?v=53" />
   </head>
   <body>
     <div id="app"></div>
@@ -27,15 +27,9 @@
         }
       });
     </script>
-    <script type="module" src="./app.js?v=50"></script>
+    <script type="module" src="./app.js?v=53"></script>
     <script>
       if ("serviceWorker" in navigator && location.protocol !== "file:") {
-        var reloadingForPwaUpdate = false;
-        navigator.serviceWorker.addEventListener("controllerchange", function () {
-          if (reloadingForPwaUpdate) return;
-          reloadingForPwaUpdate = true;
-          location.reload();
-        });
         window.addEventListener("load", function () {
           navigator.serviceWorker.register("./service-worker.js")
             .then(function (registration) { return registration.update(); })

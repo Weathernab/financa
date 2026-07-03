@@ -171,6 +171,17 @@ body {
   accent-color: var(--accent);
 }
 
+input[type="checkbox"] {
+  appearance: auto;
+  -webkit-appearance: checkbox;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  min-height: 20px;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
 .toggle-row span {
   font-weight: 850;
   color: var(--text);
@@ -2078,7 +2089,7 @@ button:disabled {
     justify-content: flex-start;
   }
 
-  input,
+  input:not([type="checkbox"]),
   select,
   textarea {
     font-size: 16px;
