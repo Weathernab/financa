@@ -569,7 +569,7 @@ button {
 
 .dashboard-widgets {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -1686,6 +1686,174 @@ button:disabled {
   gap: 14px;
 }
 
+.backup-list,
+.recurring-alerts,
+.comparison-list,
+.target-list {
+  display: grid;
+  gap: 8px;
+}
+
+.backup-row,
+.recurring-alerts > div,
+.comparison-list > div,
+.target-list > div {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.backup-row > div:first-child,
+.recurring-alerts span,
+.comparison-list span {
+  display: grid;
+  gap: 3px;
+  margin-right: auto;
+}
+
+.backup-row span,
+.recurring-alerts small,
+.comparison-list small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.recurring-upcoming {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.recurring-upcoming > strong {
+  color: var(--text);
+  margin-right: 4px;
+}
+
+.recurring-upcoming > span {
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.month-close-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 200, 87, 0.3);
+  border-radius: 8px;
+  background: rgba(255, 200, 87, 0.06);
+}
+
+.month-close-bar.closed {
+  border-color: rgba(36, 214, 176, 0.28);
+  background: rgba(36, 214, 176, 0.06);
+}
+
+.month-close-bar > div {
+  display: grid;
+  gap: 4px;
+}
+
+.month-close-bar span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.budget-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.budget-item {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.budget-item.warning { border-color: rgba(255, 200, 87, 0.45); }
+.budget-item.over { border-color: rgba(255, 102, 92, 0.55); }
+
+.budget-values {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 12px 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.budget-item small {
+  display: block;
+  margin-top: 7px;
+  color: var(--muted);
+}
+
+.notice-good {
+  padding: 12px;
+  border: 1px solid rgba(36, 214, 176, 0.28);
+  border-radius: 8px;
+  color: var(--positive);
+  background: rgba(36, 214, 176, 0.06);
+}
+
+.comparison-list > div strong {
+  margin-left: auto;
+}
+
+.comparison-list > div b {
+  min-width: 90px;
+  text-align: right;
+}
+
+.target-list > div span { margin-right: auto; }
+
+.quick-presets {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.quick-presets button {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  text-align: left;
+}
+
+.quick-entry-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.quick-amount input {
+  min-height: 58px;
+  font-size: 26px;
+  font-weight: 900;
+}
+
 .table-wrap th:last-child,
 .table-wrap td:last-child {
   position: sticky;
@@ -1717,6 +1885,13 @@ button:disabled {
     padding: 0;
   }
 
+  .action-menu {
+    right: auto;
+    left: 0;
+    width: min(220px, calc(100vw - 28px));
+    min-width: 0;
+  }
+
   .settings-tabs,
   .section-tabs {
     scrollbar-width: none;
@@ -1725,6 +1900,23 @@ button:disabled {
   .settings-tabs::-webkit-scrollbar,
   .section-tabs::-webkit-scrollbar {
     display: none;
+  }
+
+  .budget-grid,
+  .quick-entry-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .month-close-bar,
+  .backup-row,
+  .recurring-alerts > div {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .backup-row .actions,
+  .recurring-alerts .button {
+    width: 100%;
   }
 }
 

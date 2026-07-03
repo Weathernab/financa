@@ -6,6 +6,7 @@ const PROFILE_SESSION_KEY = "financa-aktivni-profil-v1";
 const PROFILE_CREDENTIAL_SESSION_KEY = "financa-prijava-hash-v1";
 const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
+const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
 
 const now = new Date();
@@ -53,6 +54,7 @@ const fields = {
     ["name", "text", "Naziv"],
     ["amount", "number", "Znesek"],
     ["category", "select", "Kategorija", incomeCategories],
+    ["incomeType", "select", "Vrsta prihodka", ["reden", "sezonski", "izreden"]],
     ["source", "text", "Vir"],
     ["account", "account-select", "Račun"],
     ["note", "textarea", "Opomba"],
@@ -151,6 +153,25 @@ const fields = {
     ["appliesTo", "select", "Velja za", ["stroški", "prihodki", "oboje"]],
     ["createdAt", "date", "Datum nastanka"],
   ],
+  budgets: [
+    ["category", "select", "Kategorija", expenseCategories.filter((category) => !["interni transfer", "za pregled"].includes(category))],
+    ["monthlyAmount", "number", "Mesečni budget"],
+    ["rollover", "select", "Prenos neporabljenega", ["da", "ne"]],
+  ],
+  recurringTransactions: [
+    ["kind", "select", "Vrsta", ["prihodek", "strošek"]],
+    ["name", "text", "Naziv"],
+    ["amount", "number", "Znesek"],
+    ["category", "select", "Kategorija", importCategories.filter((category) => !["interni transfer", "transfer", "za pregled"].includes(category))],
+    ["account", "account-select", "Račun"],
+    ["day", "number", "Dan v mesecu"],
+    ["active", "select", "Status", ["aktivno", "začasno ustavljeno"]],
+    ["note", "textarea", "Opomba"],
+  ],
+  analysisTargets: [
+    ["category", "select", "Kategorija", expenseCategories.filter((category) => !["interni transfer", "za pregled"].includes(category))],
+    ["targetShare", "number", "Ciljni delež porabe (%)"],
+  ],
 };
 
 const seedData = {
@@ -196,6 +217,10 @@ const seedData = {
   ],
   importHistory: [],
   categoryRules: [],
+  budgets: [],
+  recurringTransactions: [],
+  monthClosures: [],
+  analysisTargets: [],
 };
 
 const navItems = [
@@ -626,6 +651,7 @@ function loadState() {
     if (loaded.settings.setupCompleted === undefined) {
       loaded.settings.setupCompleted = Boolean(loaded.accounts.length || loaded.liabilities.length || loaded.snapshots.length);
     }
+    ensureDailyBackup(loaded);
     return loaded;
   } catch {
     return emptyState({ setupCompleted: false });
@@ -642,7 +668,7 @@ function cleanupInvalidEmptyEntries(data) {
 }
 
 function ensureUniqueRecordIds(data) {
-  const collections = ["incomes", "expenses", "transactions", "accounts", "investments", "liabilities", "taxes", "goals", "snapshots", "monthlyNotes", "importHistory", "categoryRules"];
+  const collections = ["incomes", "expenses", "transactions", "accounts", "investments", "liabilities", "taxes", "goals", "snapshots", "monthlyNotes", "importHistory", "categoryRules", "budgets", "recurringTransactions", "monthClosures", "analysisTargets"];
   for (const collection of collections) {
     const seen = new Set();
     data[collection] = (data[collection] || []).map((item) => {
@@ -842,13 +868,83 @@ function reconcileLedgerLinks(data) {
   }
 }
 
-function save() {
+function backupStorageKey(profileId = currentProfile?.id) {
+  return `${BACKUP_STORAGE_PREFIX}${profileId || "unknown"}`;
+}
+
+function backupHistory() {
+  try {
+    const backups = JSON.parse(localStorage.getItem(backupStorageKey()) || "[]");
+    return Array.isArray(backups) ? backups : [];
+  } catch {
+    return [];
+  }
+}
+
+function createBackup(reason = "ročno", sourceState = state) {
+  if (!currentProfile || !sourceState) return null;
+  const backup = {
+    id: crypto.randomUUID(),
+    createdAt: new Date().toISOString(),
+    reason,
+    sourceUpdatedAt: sourceState.meta?.updatedAt || "",
+    summary: syncDataSummary(sourceState),
+    data: structuredClone(sourceState),
+  };
+  const backups = [backup, ...backupHistory()].slice(0, 12);
+  try {
+    localStorage.setItem(backupStorageKey(), JSON.stringify(backups));
+    return backup;
+  } catch {
+    return null;
+  }
+}
+
+function ensureDailyBackup(sourceState = state) {
+  if (!currentProfile || !hasMeaningfulFinancialData(sourceState)) return;
+  const today = new Date().toISOString().slice(0, 10);
+  if (backupHistory().some((backup) => backup.createdAt?.slice(0, 10) === today && backup.reason === "dnevna")) return;
+  createBackup("dnevna", sourceState);
+}
+
+function restoreBackup(backupId) {
+  const backup = backupHistory().find((item) => item.id === backupId);
+  if (!backup?.data) return;
+  const currentTime = timestampValue(state.meta?.updatedAt);
+  const backupTime = timestampValue(backup.sourceUpdatedAt || backup.createdAt);
+  const warning = backupTime < currentTime
+    ? "Ta kopija je starejša od trenutnih podatkov. Nadaljevanje bo zamenjalo novejše lokalne podatke."
+    : "Obnovim izbrano različico podatkov?";
+  if (!confirm(warning)) return;
+  createBackup("pred obnovitvijo", state);
+  state = importedState(backup.data);
+  state.meta = { ...(state.meta || {}), updatedAt: new Date().toISOString(), revision: Number(state.meta?.revision || 0) + 1 };
+  save();
+  cloudAutoSyncPaused = true;
+  cloudStatus = { state: "local", message: "Kopija je obnovljena lokalno. Pred pošiljanjem v Sheets preveri podatke." };
+  render();
+}
+
+function deleteBackup(backupId) {
+  const backups = backupHistory().filter((item) => item.id !== backupId);
+  localStorage.setItem(backupStorageKey(), JSON.stringify(backups));
+  render();
+}
+
+function save({ touch = true } = {}) {
   if (!currentProfile) return;
+  if (touch) {
+    state.meta = {
+      ...(state.meta || {}),
+      updatedAt: new Date().toISOString(),
+      revision: Number(state.meta?.revision || 0) + 1,
+    };
+  }
   localStorage.setItem(profileStorageKey(), JSON.stringify(state));
   document.documentElement.dataset.theme = state.settings.theme || "dark";
   const themeMeta = document.querySelector('meta[name="theme-color"]');
   if (themeMeta) themeMeta.content = state.settings.theme === "light" ? "#eef3f8" : "#07101c";
-  queueCloudSave();
+  if (touch) queueCloudSave();
 }
 
 function googleSheetsConfig() {
@@ -882,7 +978,7 @@ function cloudPayload() {
 }
 
 function hasMeaningfulFinancialData(data = state) {
-  const collections = ["incomes", "expenses", "transactions", "accounts", "investments", "liabilities", "taxes", "goals", "snapshots", "monthlyNotes", "importHistory", "categoryRules"];
+  const collections = ["incomes", "expenses", "transactions", "accounts", "investments", "liabilities", "taxes", "goals", "snapshots", "monthlyNotes", "importHistory", "categoryRules", "budgets", "recurringTransactions", "monthClosures", "analysisTargets"];
   return collections.some((key) => Array.isArray(data?.[key]) && data[key].length > 0);
 }
 
@@ -1122,6 +1218,15 @@ async function pullGoogleSheets({ confirmOverwrite = false, quiet = false } = {}
       cloudStatus = { state: "error", message: `Google Sheet je povezan, vendar nima podatkov za profil "${currentProfile?.id || "neznan"}".` };
       return false;
     }
+    const localUpdated = timestampValue(state.meta?.updatedAt);
+    const remoteUpdated = timestampValue(result.data?.meta?.updatedAt || result.updatedAt);
+    const payloadDiffers = JSON.stringify(result.data) !== cloudPayload();
+    if (!confirmOverwrite && hasMeaningfulFinancialData(state) && payloadDiffers && localUpdated > remoteUpdated + 1000) {
+      cloudAutoSyncPaused = true;
+      cloudStatus = { state: "error", message: "Lokalni podatki so novejši od podatkov v Sheets. Samodejni prenos je ustavljen; najprej ustvari varnostno kopijo in izberi smer sinhronizacije." };
+      return null;
+    }
+    if (hasMeaningfulFinancialData(state) && payloadDiffers) createBackup("pred prenosom iz Sheets", state);
     const imported = importedState(result.data);
     state = imported;
     backendConfig.lastSyncByProfile = {
@@ -1354,6 +1459,7 @@ function snapshotForMonth(month, year) {
 
 function emptyState(settings = {}) {
   return {
+    meta: { updatedAt: "", revision: 0 },
     settings: { ...seedData.settings, setupCompleted: false, ...settings },
     incomes: [],
     expenses: [],
@@ -1367,13 +1473,18 @@ function emptyState(settings = {}) {
     monthlyNotes: [],
     importHistory: [],
     categoryRules: [],
+    budgets: [],
+    recurringTransactions: [],
+    monthClosures: [],
+    analysisTargets: [],
   };
 }
 
 function importedState(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Neveljaven JSON");
   const next = { ...emptyState(), ...data };
-  const collections = ["incomes", "expenses", "transactions", "accounts", "investments", "liabilities", "taxes", "goals", "snapshots", "monthlyNotes", "importHistory", "categoryRules"];
+  next.meta = { updatedAt: "", revision: 0, ...(data.meta && typeof data.meta === "object" ? data.meta : {}) };
+  const collections = ["incomes", "expenses", "transactions", "accounts", "investments", "liabilities", "taxes", "goals", "snapshots", "monthlyNotes", "importHistory", "categoryRules", "budgets", "recurringTransactions", "monthClosures", "analysisTargets"];
   for (const key of collections) {
     if (!Array.isArray(next[key])) next[key] = [];
   }
@@ -1444,6 +1555,13 @@ function upsert(collection, values) {
   const clean = Object.fromEntries(Object.entries(values).map(([key, value]) => [key, numericField(key) ? Number(value || 0) : value]));
   const editingId = modal?.collection === collection ? modal.item?.id : "";
   if (editingId) clean.id = editingId;
+  if (["budgets", "analysisTargets"].includes(collection)) {
+    const duplicate = (state[collection] || []).find((item) => item.id !== clean.id && item.category === clean.category);
+    if (duplicate) {
+      alert("Za to kategorijo vnos že obstaja. Uredi obstoječega.");
+      return;
+    }
+  }
   if (collection === "transfers") {
     if (!upsertTransfer(clean)) return;
     save();
@@ -1729,6 +1847,8 @@ function upsertExpense(clean, syncTransaction = false) {
     row = syncExpenseTransaction(row);
     replaceRecordById("expenses", row.id, row);
   }
+  if (row.category) state.settings.lastExpenseCategory = row.category;
+  if (row.account) state.settings.lastExpenseAccount = row.account;
   return row;
 }
 
@@ -1741,6 +1861,7 @@ function upsertIncome(clean, syncTransaction = false) {
     id: clean.id || crypto.randomUUID(),
     date: clean.date || existing?.date || iso(currentYear, currentMonth, now.getDate()),
     amount: Math.abs(Number(clean.amount || 0)),
+    incomeType: clean.incomeType || existing?.incomeType || (isRegresIncome(clean) ? "izreden" : "reden"),
     balanceAccountId: "",
     balanceImpact: 0,
   };
@@ -1751,6 +1872,8 @@ function upsertIncome(clean, syncTransaction = false) {
     row = syncIncomeTransaction(row);
     replaceRecordById("incomes", row.id, row);
   }
+  if (row.category) state.settings.lastIncomeCategory = row.category;
+  if (row.account) state.settings.lastIncomeAccount = row.account;
   return row;
 }
 
@@ -1936,7 +2059,7 @@ function removeItem(collection, id) {
 }
 
 function numericField(key) {
-  return ["amount", "balance", "quantity", "averagePrice", "currentValue", "addedThisMonth", "targetAmount", "currentAmount", "month", "year", "assets", "liabilities", "netWorth"].includes(key);
+  return ["amount", "balance", "quantity", "averagePrice", "currentValue", "addedThisMonth", "targetAmount", "currentAmount", "monthlyAmount", "targetShare", "day", "month", "year", "assets", "liabilities", "netWorth"].includes(key);
 }
 
 function render() {
@@ -1948,7 +2071,7 @@ function render() {
   if (!navItems.some(([id]) => id === active)) {
     active = state.settings.setupCompleted ? "dashboard" : "setup";
   }
-  save();
+  save({ touch: false });
   const item = navItems.find(([id]) => id === active) || navItems[0];
   document.getElementById("app").innerHTML = `
     <div class="app-shell">
@@ -2030,6 +2153,7 @@ function profileInitials(name) {
 
 function addActionMenu() {
   const actions = [
+    ["quickEntry", "Hitri vnos", "plus"],
     ["incomes", "Prihodek", "arrowUp"],
     ["expenses", "Strošek", "arrowDown"],
     ["transfers", "Prenos", "sync"],
@@ -2109,6 +2233,7 @@ function dashboardView() {
       <div class="card dashboard-link" data-nav="accounts"><div class="card-header"><h3>Računi</h3></div><div class="card-body">${bars(liquidAccounts.map((a) => [a.name, a.balance]))}</div></div>
       <div class="card dashboard-link" data-nav="liabilities"><div class="card-header"><h3>Obveznosti v 30 dneh</h3></div><div class="card-body">${upcomingHtml()}</div></div>
       <div class="card dashboard-link" data-nav="goals"><div class="card-header"><h3>Cilji</h3></div><div class="card-body">${goalSummary()}</div></div>
+      <div class="card dashboard-link" data-nav="transactions"><div class="card-header"><h3>Pričakovani vnosi</h3><span class="pill">${missingRecurringTransactions().length}</span></div><div class="card-body">${recurringAlertsHtml()}</div></div>
     </section>
     <section class="card" style="margin-top:18px"><div class="card-header"><h3>Nedavne transakcije</h3><button class="button secondary" data-nav="transactions">Prikaži vse</button></div><div class="card-body table-wrap">${modernTransactionsTable(recentTransactions(6))}</div></section>
   `;
@@ -2160,12 +2285,14 @@ function table(collection, rows, columns) {
   return `<table><thead><tr>${columns.map((c) => `<th>${c[0]}</th>`).join("")}<th></th></tr></thead><tbody>${rows.map((row) => `<tr>${columns.map(([, renderCell]) => `<td>${renderCell(row)}</td>`).join("")}<td>${rowActionMenu(collection, row.id)}</td></tr>`).join("")}</tbody></table>`;
 }
 
-function rowActionMenu(collection, id, { allowRule = false } = {}) {
+function rowActionMenu(collection, id, { allowRule = false, allowDuplicate = false, allowRecurring = false } = {}) {
   const key = `${collection}:${id}`;
   return `<div class="row-menu-wrap">
     <button class="icon-btn row-menu-trigger" type="button" title="Več možnosti" aria-label="Več možnosti" data-row-menu="${escapeAttr(key)}">${icon("more")}</button>
     ${rowMenuOpen === key ? `<div class="row-menu">
       <button type="button" data-edit="${escapeAttr(key)}">Uredi</button>
+      ${allowDuplicate ? `<button type="button" data-duplicate-transaction="${escapeAttr(id)}">Podvoji</button>` : ""}
+      ${allowRecurring ? `<button type="button" data-recurring-from-transaction="${escapeAttr(id)}">Nastavi kot ponavljajoče</button>` : ""}
       ${allowRule ? `<button type="button" data-rule-from-transaction="${escapeAttr(id)}">Zapomni pravilo</button>` : ""}
       <button class="danger-text" type="button" data-delete="${escapeAttr(key)}">Izbriši</button>
     </div>` : ""}
@@ -2173,7 +2300,7 @@ function rowActionMenu(collection, id, { allowRule = false } = {}) {
 }
 
 function incomeColumns() {
-  return [["Datum", (r) => r.date], ["Naziv", (r) => r.name], ["Znesek", (r) => `<strong class="positive">${money(r.amount)}</strong>`], ["Kategorija", (r) => r.category], ["Vir", (r) => r.source], ["Račun", (r) => r.account || "Ni določen"], ["Opomba", (r) => r.note || ""]];
+  return [["Datum", (r) => r.date], ["Naziv", (r) => r.name], ["Znesek", (r) => `<strong class="positive">${money(r.amount)}</strong>`], ["Kategorija", (r) => r.category], ["Vrsta", (r) => `<span class="pill">${incomeClassification(r)}</span>`], ["Vir", (r) => r.source], ["Račun", (r) => r.account || "Ni določen"], ["Opomba", (r) => r.note || ""]];
 }
 
 function expenseColumns() {
@@ -2191,7 +2318,71 @@ function transactionsView() {
   <section class="grid two-col" style="margin-top:18px">
     <div class="card"><div class="card-header"><h3>Za pregled</h3><span class="pill">${review.length} odprtih</span></div><div class="card-body table-wrap">${modernTransactionsTable(review)}</div></div>
     <div class="card"><div class="card-header"><h3>Vse transakcije</h3></div><div class="card-body table-wrap">${modernTransactionsTable(ready)}</div></div>
-  </section>`;
+  </section>
+  ${recurringTransactionsView()}`;
+}
+
+function recurringTransactionsView() {
+  const rows = state.recurringTransactions || [];
+  const missing = missingRecurringTransactions(filters.month, filters.year);
+  const upcoming = pendingRecurringTransactions(filters.month, filters.year)
+    .filter((item) => !missing.some((missingItem) => missingItem.id === item.id));
+  return `<section class="card" style="margin-top:18px"><div class="card-header"><div><h3>Ponavljajoče transakcije</h3><p>Pričakovani mesečni prihodki in stroški.</p></div><button class="button secondary" data-add="recurringTransactions">Dodaj pravilo</button></div><div class="card-body">
+    ${missing.length ? `<div class="recurring-alerts">${missing.map((item) => `<div><span><strong>${escapeHtml(item.name)}</strong><small>manjka od ${item.day}. dne · ${money(item.amount)}</small></span><button class="button secondary" type="button" data-create-recurring="${escapeAttr(item.id)}">Potrdi vnos</button></div>`).join("")}</div>` : `<div class="notice-good">Ni zapadlih manjkajočih vnosov.</div>`}
+    ${upcoming.length ? `<div class="recurring-upcoming"><strong>Prihajajoči vnosi</strong>${upcoming.map((item) => `<span>${escapeHtml(item.name)} <small>${item.day}. dan · ${money(item.amount)}</small></span>`).join("")}</div>` : ""}
+    <div class="table-wrap" style="margin-top:14px">${table("recurringTransactions", rows, [["Naziv", (r) => r.name], ["Vrsta", (r) => r.kind], ["Znesek", (r) => money(r.amount)], ["Kategorija", (r) => r.category], ["Račun", (r) => r.account], ["Dan", (r) => r.day], ["Status", (r) => r.active]])}</div>
+  </div></section>`;
+}
+
+function recurringMatchesEntry(rule, month, year) {
+  const rows = rule.kind === "prihodek" ? state.incomes : state.expenses;
+  return rows.some((item) =>
+    sameMonth(item, "date", month, year)
+    && normalizeText(item.name) === normalizeText(rule.name)
+    && (!rule.account || normalizeText(item.account || item.source) === normalizeText(rule.account))
+    && Math.abs(Number(item.amount || 0) - Number(rule.amount || 0)) < 0.02
+  );
+}
+
+function recurringDueDate(rule, month, year) {
+  const maxDay = new Date(Number(year), Number(month), 0).getDate();
+  const day = Math.min(maxDay, Math.max(1, Number(rule.day || 1)));
+  return new Date(Number(year), Number(month) - 1, day, 23, 59, 59, 999);
+}
+
+function pendingRecurringTransactions(month = currentMonth, year = currentYear) {
+  return (state.recurringTransactions || []).filter((rule) =>
+    rule.active !== "začasno ustavljeno" && !recurringMatchesEntry(rule, month, year)
+  );
+}
+
+function missingRecurringTransactions(month = currentMonth, year = currentYear) {
+  const endOfToday = new Date();
+  endOfToday.setHours(23, 59, 59, 999);
+  return pendingRecurringTransactions(month, year).filter((rule) => recurringDueDate(rule, month, year) <= endOfToday);
+}
+
+function recurringAlertsHtml() {
+  const missing = missingRecurringTransactions();
+  if (!missing.length) return `<div class="empty">Ni manjkajočih pričakovanih vnosov.</div>`;
+  return `<div class="compact-list">${missing.slice(0, 4).map((item) => `<div><span>${escapeHtml(item.name)}</span><strong>${money(item.amount)}</strong></div>`).join("")}</div>`;
+}
+
+function createRecurringTransaction(ruleId) {
+  const rule = (state.recurringTransactions || []).find((item) => item.id === ruleId);
+  if (!rule) return;
+  const month = Number(filters.month || currentMonth);
+  const year = Number(filters.year || currentYear);
+  if (recurringMatchesEntry(rule, month, year)) return;
+  const maxDay = new Date(year, month, 0).getDate();
+  const date = iso(year, month, Math.min(maxDay, Math.max(1, Number(rule.day || 1))));
+  if (rule.kind === "prihodek") {
+    upsertIncome({ date, name: rule.name, amount: rule.amount, category: rule.category, incomeType: "reden", source: "Ponavljajoči vnos", account: rule.account, note: rule.note || "Ponavljajoči vnos" }, true);
+  } else {
+    upsertExpense({ date, name: rule.name, amount: rule.amount, category: rule.category, subcategory: "", account: rule.account, kind: rule.category === "naročnine" || rule.category === "zavarovanja" ? "fiksen" : "variabilen", note: rule.note || "Ponavljajoči vnos" }, true);
+  }
+  save();
+  render();
 }
 
 function countCard(label, value, hint, tone) {
@@ -2216,7 +2407,7 @@ function modernTransactionsTable(rows) {
       <td><span class="pill">${escapeHtml(tx.category || "za pregled")}</span>${tx.subcategory ? `<br><small class="muted">${escapeHtml(tx.subcategory)}</small>` : ""}</td>
       <td>${escapeHtml(tx.account || "")}</td>
       <td>${escapeHtml(tx.status || "")}</td>
-      <td>${rowActionMenu("transactions", tx.id, { allowRule: !tx.transferManaged })}</td>
+      <td>${rowActionMenu("transactions", tx.id, { allowRule: !tx.transferManaged, allowDuplicate: true, allowRecurring: !tx.transferManaged })}</td>
     </tr>`).join("")}
   </tbody></table>`;
 }
@@ -2231,7 +2422,7 @@ function transactionsTable(rows) {
       <td>${escapeHtml(tx.account || "")}</td>
       <td>${escapeHtml(tx.status || "")}</td>
       <td><strong class="${Number(tx.amount) < 0 ? "negative" : "positive"}">${money(Math.abs(Number(tx.amount || 0)))}</strong></td>
-      <td>${rowActionMenu("transactions", tx.id, { allowRule: !tx.transferManaged })}</td>
+      <td>${rowActionMenu("transactions", tx.id, { allowRule: !tx.transferManaged, allowDuplicate: true, allowRecurring: !tx.transferManaged })}</td>
     </tr>`).join("")}
   </tbody></table>`;
 }
@@ -2326,21 +2517,142 @@ function goalsView() {
 function monthlyView() {
   const data = monthlyData();
   const note = state.monthlyNotes.find((n) => Number(n.month) === Number(filters.month) && Number(n.year) === Number(filters.year));
-  const netWorthMetric = data.netWorthChange === null
+  const closure = monthClosure(filters.month, filters.year);
+  const displayed = closure?.analytics ? { ...data, ...closure.analytics } : data;
+  const expenseCategories = closure?.analytics?.expenseByCategory || groupBy(data.expenses, "category");
+  const netWorthMetric = displayed.netWorthChange === null
     ? unavailableMetric("Sprememba NW", "Potrebna sta dva mesečna snapshota")
-    : metricCard(["Sprememba NW", data.netWorthChange, "glede na prejšnji snapshot", data.netWorthChange >= 0 ? "positive" : "negative"]);
+    : metricCard(["Sprememba NW", displayed.netWorthChange, "glede na prejšnji snapshot", displayed.netWorthChange >= 0 ? "positive" : "negative"]);
   return `${filterHtml("expenses")}
+    <div class="month-close-bar ${closure ? "closed" : ""}">
+      <div><strong>${closure ? "Mesec je zaključen" : "Mesec še ni zaključen"}</strong><span>${closure ? `Zaključeno ${formatSyncTime(closure.closedAt)}. Analitične številke so zaklenjene.` : "Zaključek shrani snapshot, komentar in budgete ter pripravi naslednji mesec."}</span></div>
+      ${closure ? `<span class="sync-badge success">Zaklenjeno</span>` : `<button class="button" type="button" data-action="close-month">Zaključi mesec</button>`}
+    </div>
     <section class="grid metrics" style="margin-top:14px">
-      ${metricCard(["Prihodki", data.incomeTotal, monthLabel(filters.month, filters.year), "positive"])}
-      ${metricCard(["Stroški", data.expenseTotal, "skupaj", "negative"])}
-      ${metricCard(["Prihranek", data.saved, `${NUMBER.format(data.savingsRate)} % savings rate`, data.saved >= 0 ? "positive" : "negative"])}
-      ${metricCard(["Investirano", data.invested, "ta mesec", "positive"])}
+      ${metricCard(["Prihodki", displayed.incomeTotal, monthLabel(filters.month, filters.year), "positive"])}
+      ${metricCard(["Stroški", displayed.expenseTotal, "skupaj", "negative"])}
+      ${metricCard(["Prihranek", displayed.saved, `${NUMBER.format(displayed.savingsRate)} % savings rate`, displayed.saved >= 0 ? "positive" : "negative"])}
+      ${metricCard(["Investirano", displayed.invested, "ta mesec", "positive"])}
       ${netWorthMetric}
     </section>
     <section class="grid two-col" style="margin-top:14px">
-      <div class="card"><div class="card-header"><h3>Največje kategorije stroškov</h3></div><div class="card-body">${bars(groupBy(data.expenses, "category"))}</div></div>
+      <div class="card"><div class="card-header"><h3>Največje kategorije stroškov</h3></div><div class="card-body">${bars(expenseCategories)}</div></div>
       <div class="card"><div class="card-header"><h3>Komentar meseca</h3>${note ? `<button class="button secondary" data-edit="monthlyNotes:${note.id}">Uredi</button>` : `<button class="button" data-add="monthlyNotes">Dodaj komentar</button>`}</div><div class="card-body">${noteHtml(note)}</div></div>
-    </section>`;
+    </section>
+    ${monthlyBudgetView(filters.month, filters.year)}`;
+}
+
+function monthClosure(month, year) {
+  return (state.monthClosures || []).find((item) => Number(item.month) === Number(month) && Number(item.year) === Number(year)) || null;
+}
+
+function previousMonthPeriod(month, year) {
+  return month === 1 ? { month: 12, year: year - 1 } : { month: month - 1, year };
+}
+
+function nextMonthPeriod(month, year) {
+  return month === 12 ? { month: 1, year: year + 1 } : { month: month + 1, year };
+}
+
+function budgetRowsForMonth(month, year) {
+  const closure = monthClosure(month, year);
+  if (Array.isArray(closure?.budgets)) {
+    return closure.budgets.map((locked) => {
+      const budget = (state.budgets || []).find((item) => item.category === locked.category);
+      const available = Number(locked.available || 0);
+      const spent = Number(locked.spent || 0);
+      return {
+        ...(budget || {}),
+        ...locked,
+        id: budget?.id || "",
+        base: Number(budget?.monthlyAmount || available),
+        carry: Math.max(0, available - Number(budget?.monthlyAmount || available)),
+        percent: available > 0 ? spent / available * 100 : 0,
+      };
+    });
+  }
+  const expenses = state.expenses.filter((item) => sameMonth(item, "date", month, year));
+  const previous = previousMonthPeriod(Number(month), Number(year));
+  const previousClosure = monthClosure(previous.month, previous.year);
+  return (state.budgets || []).map((budget) => {
+    const base = Number(budget.monthlyAmount || 0);
+    const prior = previousClosure?.budgets?.find((item) => item.category === budget.category);
+    const carry = budget.rollover === "da" ? Math.max(0, Number(prior?.unused || 0)) : 0;
+    const available = base + carry;
+    const spent = sum(expenses.filter((item) => item.category === budget.category));
+    const percent = available > 0 ? spent / available * 100 : 0;
+    return { ...budget, base, carry, available, spent, unused: Math.max(0, available - spent), percent };
+  });
+}
+
+function monthlyBudgetView(month, year) {
+  const rows = budgetRowsForMonth(month, year);
+  const locked = Boolean(monthClosure(month, year));
+  return `<section class="card" style="margin-top:14px"><div class="card-header"><div><h3>Budgeti</h3><p>Poraba glede na načrt za ${monthLabel(month, year)}.</p></div>${locked ? `<span class="pill">Zaklenjeno</span>` : `<button class="button secondary" data-add="budgets">Dodaj budget</button>`}</div><div class="card-body">
+    ${rows.length ? `<div class="budget-grid">${rows.map((row) => `<article class="budget-item ${row.percent >= 100 ? "over" : row.percent >= 80 ? "warning" : ""}">
+      <div class="card-inline-head"><strong>${escapeHtml(row.category)}</strong>${!locked && row.id ? rowActionMenu("budgets", row.id) : ""}</div>
+      <div class="budget-values"><span>${money(row.spent)} porabljeno</span><b>${money(row.available)}</b></div>
+      <div class="progress" style="--value:${Math.min(100, row.percent)}%"><span></span></div>
+      <small>${NUMBER.format(row.percent)} %${row.carry ? ` · prenos ${money(row.carry)}` : ""}${row.percent >= 100 ? " · budget presežen" : row.percent >= 80 ? " · približuješ se meji" : ""}</small>
+    </article>`).join("")}</div>` : `<div class="empty">Dodaj prvi mesečni budget po kategoriji.</div>`}
+  </div></section>`;
+}
+
+function openMonthCloseModal() {
+  if (monthClosure(filters.month, filters.year)) return;
+  modal = { collection: "closeMonth", title: "Zaključi mesec", item: { month: filters.month, year: filters.year } };
+  render();
+}
+
+function closeMonth(values) {
+  const month = Number(modal?.item?.month || filters.month);
+  const year = Number(modal?.item?.year || filters.year);
+  if (monthClosure(month, year)) return closeModal();
+  const data = monthlyData(month, year);
+  const analytics = analyticsMonthlyData(month, year, { ignoreClosure: true });
+  createBackup(`pred zaključkom ${month}/${year}`, state);
+  const snapshot = {
+    id: snapshotForMonth(month, year)?.id || crypto.randomUUID(),
+    month, year,
+    assets: data.assets,
+    liabilities: data.liabilities,
+    netWorth: data.netWorth,
+    note: `Zaključek meseca ${monthLabel(month, year)}`,
+  };
+  replaceOrInsertRecord("snapshots", snapshot);
+  const existingNote = state.monthlyNotes.find((item) => Number(item.month) === month && Number(item.year) === year);
+  const note = {
+    ...(existingNote || {}),
+    id: existingNote?.id || crypto.randomUUID(),
+    month, year,
+    good: values.good || existingNote?.good || "",
+    bad: values.bad || existingNote?.bad || "",
+    next: values.next || existingNote?.next || "",
+  };
+  replaceOrInsertRecord("monthlyNotes", note);
+  state.monthClosures = [{
+    id: crypto.randomUUID(), month, year, closedAt: new Date().toISOString(),
+    analytics: {
+      incomeTotal: analytics.incomeTotal,
+      expenseTotal: analytics.expenseTotal,
+      saved: analytics.saved,
+      savingsRate: analytics.savingsRate,
+      invested: data.invested,
+      netWorth: data.netWorth,
+      expenseByCategory: groupBy(data.expenses, "category"),
+      expenseByKind: groupBy(data.expenses, "kind"),
+      recurringExpenseByCategory: groupBy(data.expenses.filter((item) => item.kind !== "enkratni večji"), "category"),
+      recurringExpenseTotal: sum(data.expenses.filter((item) => item.kind !== "enkratni večji")),
+      incomeByType: ["reden", "sezonski", "izreden"].map((type) => [type, sum(data.incomes.filter((item) => incomeClassification(item) === type))]),
+    },
+    budgets: budgetRowsForMonth(month, year).map(({ category, available, spent, unused }) => ({ category, available, spent, unused })),
+  }, ...(state.monthClosures || [])];
+  const next = nextMonthPeriod(month, year);
+  filters.month = next.month;
+  filters.year = next.year;
+  save();
+  modal = null;
+  render();
 }
 
 function noteHtml(note) {
@@ -2351,10 +2663,9 @@ function noteHtml(note) {
 function analyticsView() {
   const months = recordedActivityMonths(6);
   const completedMonths = completedActivityMonths(6);
-  const selectedExpenses = state.expenses.filter((item) => sameMonth(item));
   const monthData = completedMonths.map(([month, year]) => analyticsMonthlyData(month, year));
   const incomeSeries = months.map(([m, y]) => [monthLabel(m, y), recurringIncomeTotal(m, y)]);
-  const expenseSeries = months.map(([m, y]) => [monthLabel(m, y), sum(state.expenses.filter((i) => sameMonth(i, "date", m, y)))]);
+  const expenseSeries = months.map(([m, y]) => [monthLabel(m, y), analyticsMonthlyData(m, y).expenseTotal]);
   const savingsSeries = months.map(([m, y]) => {
     const d = analyticsMonthlyData(m, y);
     return [monthLabel(m, y), d.savingsRate];
@@ -2363,7 +2674,7 @@ function analyticsView() {
   const averageIncome = average(monthData.map((item) => item.incomeTotal));
   const averageExpenses = average(monthData.map((item) => item.expenseTotal));
   const averageSavings = average(monthData.map((item) => item.saved));
-  const structure = groupBy(selectedExpenses, "kind");
+  const structure = analyticsExpenseEntries(filters.month, filters.year, "kind");
   return `<section class="grid metrics">
     ${metricCard(["Povp. redni prihodki", averageIncome, `${completedMonths.length} zaključenih mesecev · brez regresa`, "positive"])}
     ${metricCard(["Povp. stroški", averageExpenses, `${completedMonths.length} zaključenih mesecev`, "negative"])}
@@ -2375,7 +2686,7 @@ function analyticsView() {
     <div class="card"><div class="card-header"><h3>Stroški po mesecih</h3></div><div class="card-body">${trendChart(expenseSeries)}</div></div>
     <div class="card"><div class="card-header"><h3>Savings rate</h3></div><div class="card-body">${trendChart(savingsSeries, "%")}</div></div>
     <div class="card"><div class="card-header"><h3>Net worth</h3></div><div class="card-body">${trendChart(nwSeries)}</div></div>
-    <div class="card"><div class="card-header"><h3>Stroški po kategorijah</h3><span class="pill">${monthLabel(filters.month, filters.year)}</span></div><div class="card-body">${bars(groupBy(selectedExpenses, "category"))}</div></div>
+    <div class="card"><div class="card-header"><h3>Stroški po kategorijah</h3><span class="pill">${monthLabel(filters.month, filters.year)}</span></div><div class="card-body">${bars(analyticsExpenseEntries(filters.month, filters.year, "category"))}</div></div>
     <div class="card"><div class="card-header"><h3>Struktura stroškov</h3><span class="pill">${monthLabel(filters.month, filters.year)}</span></div><div class="card-body">${donutChart(structure)}</div></div>
   </section>
   <section class="analytics-deep" style="margin-top:14px">
@@ -2385,7 +2696,67 @@ function analyticsView() {
   <section class="card" style="margin-top:14px">
     <div class="card-header"><h3>Priložnosti za zmanjšanje porabe</h3><span class="pill">${completedMonths.length >= 3 ? "zadnji 3 zaključeni meseci" : "preliminarno"}</span></div>
     <div class="card-body">${spendingRecommendationsHtml()}</div>
+  </section>
+  <section class="grid two-col" style="margin-top:14px">
+    <div class="card"><div class="card-header"><h3>Primerjava s povprečjem</h3></div><div class="card-body">${monthComparisonHtml()}</div></div>
+    <div class="card"><div class="card-header"><h3>Nenavadna poraba</h3></div><div class="card-body">${expenseAnomaliesHtml()}</div></div>
+    <div class="card"><div class="card-header"><h3>Vrste prihodkov</h3></div><div class="card-body">${incomeClassificationHtml()}</div></div>
+    <div class="card"><div class="card-header"><h3>Lastni ciljni deleži</h3><button class="button secondary" data-add="analysisTargets">Dodaj cilj</button></div><div class="card-body">${analysisTargetsHtml()}</div></div>
   </section>`;
+}
+
+function monthComparisonHtml() {
+  const months = completedActivityMonths(6);
+  if (!months.length) return `<div class="empty">Primerjava bo na voljo po prvem zaključenem mesecu.</div>`;
+  const latest = months[months.length - 1];
+  const prior = months.slice(0, -1).slice(-3);
+  if (!prior.length) return `<div class="empty">Za primerjavo sta potrebna vsaj dva zaključena meseca.</div>`;
+  const current = analyticsMonthlyData(latest[0], latest[1]);
+  const priorData = prior.map(([month, year]) => analyticsMonthlyData(month, year));
+  const rows = [
+    ["Redni prihodki", current.incomeTotal, average(priorData.map((item) => item.incomeTotal))],
+    ["Stroški", current.expenseTotal, average(priorData.map((item) => item.expenseTotal))],
+    ["Prihranek", current.saved, average(priorData.map((item) => item.saved))],
+  ];
+  return `<div class="comparison-list">${rows.map(([label, value, avg]) => {
+    const diff = value - avg;
+    return `<div><span>${label}<small>${monthLabel(latest[0], latest[1])}</small></span><strong>${money(value)}</strong><b class="${diff >= 0 ? "positive" : "negative"}">${signed(diff)}</b></div>`;
+  }).join("")}</div>`;
+}
+
+function expenseAnomaliesHtml() {
+  const months = completedActivityMonths(6);
+  if (months.length < 2) return `<div class="empty">Za zaznavanje odstopanj sta potrebna vsaj dva zaključena meseca.</div>`;
+  const [latestMonth, latestYear] = months[months.length - 1];
+  const history = months.slice(0, -1).slice(-3);
+  const current = new Map(analyticsExpenseEntries(latestMonth, latestYear, "category"));
+  const categories = [...current.keys()];
+  const anomalies = categories.map((category) => {
+    const baseline = average(history.map(([month, year]) => analyticsExpenseCategoryTotal(month, year, category)));
+    const value = Number(current.get(category) || 0);
+    const increase = value - baseline;
+    return { category, value, baseline, increase, ratio: baseline > 0 ? value / baseline : value > 50 ? Infinity : 1 };
+  }).filter((item) => item.increase >= 30 && item.ratio >= 1.3).sort((a, b) => b.increase - a.increase);
+  if (!anomalies.length) return `<div class="notice-good">V zadnjem zaključenem mesecu ni večjih odstopanj.</div>`;
+  return `<div class="recommendation-list">${anomalies.map((item) => `<div class="recommendation"><div><strong>${escapeHtml(item.category)}</strong><span>${money(item.value)} proti povprečju ${money(item.baseline)}</span></div><b class="negative">+${money(item.increase)}</b></div>`).join("")}</div>`;
+}
+
+function incomeClassificationHtml() {
+  const months = completedActivityMonths(6).slice(-3);
+  const rows = ["reden", "sezonski", "izreden"].map((type) => [
+    type,
+    months.reduce((total, [month, year]) => {
+      const value = analyticsIncomeTypeEntries(month, year).find(([name]) => name === type)?.[1];
+      return total + Number(value || 0);
+    }, 0),
+  ]);
+  return bars(rows);
+}
+
+function analysisTargetsHtml() {
+  const targets = state.analysisTargets || [];
+  if (!targets.length) return `<div class="empty">Brez lastnih ciljev se uporabljajo orientacijski privzeti deleži.</div>`;
+  return `<div class="target-list">${targets.map((item) => `<div><span>${escapeHtml(item.category)}</span><strong>${NUMBER.format(item.targetShare)} %</strong>${rowActionMenu("analysisTargets", item.id)}</div>`).join("")}</div>`;
 }
 
 function average(values) {
@@ -2405,12 +2776,21 @@ function isRegresIncome(item) {
   return /(^|\s)regres(\s|$)/i.test(searchable);
 }
 
-function recurringIncomeTotal(month, year) {
-  return sum(state.incomes.filter((item) => sameMonth(item, "date", month, year) && !isRegresIncome(item)));
+function incomeClassification(item) {
+  if (["reden", "sezonski", "izreden"].includes(item?.incomeType)) return item.incomeType;
+  return isRegresIncome(item) ? "izreden" : "reden";
 }
 
-function analyticsMonthlyData(month, year) {
+function recurringIncomeTotal(month, year) {
+  return sum(state.incomes.filter((item) => sameMonth(item, "date", month, year) && incomeClassification(item) === "reden"));
+}
+
+function analyticsMonthlyData(month, year, { ignoreClosure = false } = {}) {
+  const closure = !ignoreClosure ? monthClosure(month, year) : null;
   const data = monthlyData(month, year);
+  if (closure?.analytics) {
+    return { ...data, ...closure.analytics, locked: true };
+  }
   const incomeTotal = recurringIncomeTotal(month, year);
   const saved = incomeTotal - data.expenseTotal;
   return {
@@ -2419,6 +2799,38 @@ function analyticsMonthlyData(month, year) {
     saved,
     savingsRate: incomeTotal ? saved / incomeTotal * 100 : 0,
   };
+}
+
+function analyticsExpenseEntries(month, year, key = "category") {
+  const closure = monthClosure(month, year);
+  if (closure?.analytics) {
+    const locked = key === "kind" ? closure.analytics.expenseByKind : closure.analytics.expenseByCategory;
+    if (Array.isArray(locked)) return locked;
+  }
+  return groupBy(state.expenses.filter((item) => sameMonth(item, "date", month, year)), key);
+}
+
+function analyticsExpenseCategoryTotal(month, year, category) {
+  return Number(analyticsExpenseEntries(month, year, "category").find(([name]) => name === category)?.[1] || 0);
+}
+
+function analyticsRecurringExpenseEntries(month, year) {
+  const closure = monthClosure(month, year);
+  if (Array.isArray(closure?.analytics?.recurringExpenseByCategory)) return closure.analytics.recurringExpenseByCategory;
+  return groupBy(state.expenses.filter((item) => sameMonth(item, "date", month, year) && item.kind !== "enkratni večji"), "category");
+}
+
+function analyticsRecurringExpenseTotal(month, year) {
+  const closure = monthClosure(month, year);
+  if (closure?.analytics?.recurringExpenseTotal !== undefined) return Number(closure.analytics.recurringExpenseTotal || 0);
+  return sum(state.expenses.filter((item) => sameMonth(item, "date", month, year) && item.kind !== "enkratni večji"));
+}
+
+function analyticsIncomeTypeEntries(month, year) {
+  const closure = monthClosure(month, year);
+  if (Array.isArray(closure?.analytics?.incomeByType)) return closure.analytics.incomeByType;
+  const incomes = state.incomes.filter((item) => sameMonth(item, "date", month, year));
+  return ["reden", "sezonski", "izreden"].map((type) => [type, sum(incomes.filter((item) => incomeClassification(item) === type))]);
 }
 
 function forecastHtml() {
@@ -2452,15 +2864,11 @@ function allocationGuidanceHtml() {
   if (!months.length) return `<div class="empty">Za priporočilo najprej dodaj prihodke in stroške.</div>`;
   const data = months.slice(-3).map(([month, year]) => analyticsMonthlyData(month, year));
   const monthlyIncome = average(data.map((item) => item.incomeTotal));
-  const monthlyExpenses = average(months.slice(-3).map(([month, year]) =>
-    sum(state.expenses.filter((item) => sameMonth(item, "date", month, year) && item.kind !== "enkratni večji"))
-  ));
+  const monthlyExpenses = average(months.slice(-3).map(([month, year]) => analyticsRecurringExpenseTotal(month, year)));
   if (!monthlyIncome && !monthlyExpenses) return `<div class="empty">Za priporočilo ni dovolj podatkov.</div>`;
   const discretionary = new Set(["restavracije/kava", "prosti čas", "naročnine", "oblačila", "potovanja", "spletni nakupi"]);
   const discretionaryMonthly = average(months.slice(-3).map(([month, year]) =>
-    sum(state.expenses.filter((item) =>
-      sameMonth(item, "date", month, year) && item.kind !== "enkratni večji" && discretionary.has(item.category)
-    ))
+    analyticsRecurringExpenseEntries(month, year).reduce((total, [category, value]) => total + (discretionary.has(category) ? Number(value || 0) : 0), 0)
   ));
   const essentialMonthly = Math.max(0, monthlyExpenses - discretionaryMonthly);
   const revolutTarget = Math.min(monthlyIncome * 0.3, Math.max(discretionaryMonthly * 1.05, monthlyExpenses * 0.12));
@@ -2500,10 +2908,7 @@ function spendingRecommendationsHtml() {
   const months = completedActivityMonths(6);
   if (!months.length) return `<div class="empty">Za priporočila najprej evidentiraj vsaj en mesec stroškov.</div>`;
   const sampleMonths = months.slice(-3);
-  const sample = analyticsExpenseSample(sampleMonths).filter((item) => item.kind !== "enkratni večji");
-  const monthlyExpense = average(sampleMonths.map(([month, year]) =>
-    sum(sample.filter((item) => sameMonth(item, "date", month, year)))
-  ));
+  const monthlyExpense = average(sampleMonths.map(([month, year]) => analyticsRecurringExpenseTotal(month, year)));
   if (!monthlyExpense) return `<div class="empty">V izbranem obdobju ni stroškov.</div>`;
   const thresholds = new Map([
     ["restavracije/kava", 0.08],
@@ -2513,7 +2918,12 @@ function spendingRecommendationsHtml() {
     ["spletni nakupi", 0.06],
     ["potovanja", 0.15],
   ]);
-  const categoryMonthly = groupBy(sample, "category").map(([category, total]) => [category, total / sampleMonths.length]);
+  for (const target of state.analysisTargets || []) {
+    const share = Number(target.targetShare || 0) / 100;
+    if (target.category && share > 0) thresholds.set(target.category, share);
+  }
+  const categories = new Set(sampleMonths.flatMap(([month, year]) => analyticsRecurringExpenseEntries(month, year).map(([category]) => category)));
+  const categoryMonthly = [...categories].map((category) => [category, average(sampleMonths.map(([month, year]) => Number(analyticsRecurringExpenseEntries(month, year).find(([name]) => name === category)?.[1] || 0)))]);
   const suggestions = categoryMonthly
     .map(([category, value]) => {
       const targetShare = thresholds.get(category);
@@ -2530,7 +2940,7 @@ function spendingRecommendationsHtml() {
     <div><strong>${escapeHtml(item.category)}</strong><span>${NUMBER.format(item.share)} % mesečne porabe · povprečno ${money(item.value)}</span></div>
     <b>Možen prihranek ${money(item.saving)} / mesec</b>
   </div>`).join("")}</div>
-  <p class="analysis-note">Metoda primerja povprečje največ zadnjih treh zaključenih mesecev z orientacijskimi deleži celotne porabe: restavracije/kava in prosti čas 8 %, naročnine 4 %, oblačila 5 %, spletni nakupi 6 % in potovanja 15 %. Možen prihranek je znesek nad tem pragom.</p>`;
+  <p class="analysis-note">Metoda primerja povprečje največ zadnjih treh zaključenih mesecev s tvojimi ciljnimi deleži. Kjer lastnega cilja ni, se uporabijo orientacijski privzeti pragovi. Možen prihranek je znesek nad izbranim pragom.</p>`;
 }
 
 function importsView() {
@@ -3311,7 +3721,8 @@ function settingsDataView() {
     : "";
   return `<div class="card"><div class="card-header"><div><h3>Podatki in varnostne kopije</h3><p>Izvoz, obnovitev in začetni popis podatkov.</p></div></div><div class="card-body">
     <div class="settings-action-grid">
-      <button class="button" data-action="export-json">Izvozi JSON</button>
+      <button class="button" data-action="create-backup">Ustvari kopijo</button>
+      <button class="button secondary" data-action="export-json">Izvozi JSON</button>
       <button class="button secondary" data-action="export-csv">Izvozi CSV</button>
       ${localBackupButton}
       <label class="button secondary">Uvozi JSON<input type="file" accept="application/json" data-action="import-json" hidden></label>
@@ -3319,7 +3730,18 @@ function settingsDataView() {
       <button class="button danger ghost" data-action="clear">Izbriši vse podatke</button>
     </div>
   </div></div>
+  ${backupHistoryView()}
   <div class="settings-embedded-import">${importsView()}</div>`;
+}
+
+function backupHistoryView() {
+  const backups = backupHistory();
+  return `<div class="card"><div class="card-header"><div><h3>Zadnje različice</h3><p>Samodejna dnevna in ročno ustvarjena stanja te naprave.</p></div><span class="pill">${backups.length} kopij</span></div><div class="card-body">
+    ${backups.length ? `<div class="backup-list">${backups.map((backup) => `<article class="backup-row">
+      <div><strong>${formatSyncTime(backup.createdAt)}</strong><span>${escapeHtml(backup.reason || "kopija")} · ${escapeHtml(backup.summary || "")}</span></div>
+      <div class="actions"><button class="button secondary" type="button" data-restore-backup="${escapeAttr(backup.id)}">Obnovi</button><button class="icon-btn" type="button" title="Izbriši kopijo" data-delete-backup="${escapeAttr(backup.id)}">X</button></div>
+    </article>`).join("")}</div>` : `<div class="empty">Varnostna kopija bo ustvarjena ob prvi dnevni uporabi ali ročno.</div>`}
+  </div></div>`;
 }
 
 function settingsSyncView() {
@@ -3679,6 +4101,8 @@ function recordedActivityMonths(limit = 6) {
 
 function modalHtml() {
   if (modal.collection === "deleteProfile") return deleteProfileModalHtml();
+  if (modal.collection === "closeMonth") return closeMonthModalHtml();
+  if (modal.collection === "quickEntry") return quickEntryModalHtml();
   const current = modal.item || defaults(modal.collection);
   return `<div class="modal-backdrop">
     <form class="modal" data-form="${modal.collection}">
@@ -3690,6 +4114,133 @@ function modalHtml() {
       <div class="modal-foot"><button type="button" class="button secondary" data-action="close">Prekliči</button><button class="button" type="submit">Shrani</button></div>
     </form>
   </div>`;
+}
+
+function closeMonthModalHtml() {
+  const month = Number(modal.item?.month || filters.month);
+  const year = Number(modal.item?.year || filters.year);
+  const note = state.monthlyNotes.find((item) => Number(item.month) === month && Number(item.year) === year) || {};
+  return `<div class="modal-backdrop"><form class="modal" data-close-month-form>
+    <div class="modal-head"><h3>Zaključi ${monthLabel(month, year)}</h3><button type="button" class="icon-btn" data-action="close">X</button></div>
+    <div class="modal-body form-grid">
+      <p class="settings-note full">Shranjeni bodo net worth snapshot, analitične številke, stanje budgetov in komentar. Zaključene analitike se pozneje ne preračunavajo.</p>
+      <label class="full">Kaj je šlo dobro<textarea name="good">${escapeHtml(note.good || "")}</textarea></label>
+      <label class="full">Kaj je šlo slabo<textarea name="bad">${escapeHtml(note.bad || "")}</textarea></label>
+      <label class="full">Kaj popraviti naslednji mesec<textarea name="next">${escapeHtml(note.next || "")}</textarea></label>
+    </div>
+    <div class="modal-foot"><button type="button" class="button secondary" data-action="close">Prekliči</button><button class="button" type="submit">Zaključi in nadaljuj</button></div>
+  </form></div>`;
+}
+
+function quickEntryModalHtml() {
+  const recent = recentTransactions(12).filter((item) => item.status === "pripravljeno" && !item.transferManaged);
+  const presets = [];
+  const seen = new Set();
+  for (const tx of recent) {
+    const key = `${normalizeText(tx.description)}|${tx.category}|${tx.account}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    presets.push(tx);
+    if (presets.length === 4) break;
+  }
+  const defaultType = state.settings.lastQuickType || "strošek";
+  const defaultCategory = defaultType === "prihodek"
+    ? state.settings.lastIncomeCategory || "plača"
+    : state.settings.lastExpenseCategory || "hrana";
+  const rememberedAccount = defaultType === "prihodek" ? state.settings.lastIncomeAccount : state.settings.lastExpenseAccount;
+  const defaultAccount = rememberedAccount
+    || (state.accounts || []).find((account) => canonicalAssetKey(account) === "banka")?.name
+    || (state.accounts || []).find((account) => canonicalAssetKey(account) === "revolut")?.name
+    || (state.accounts || []).find(isSpendableAccount)?.name
+    || "";
+  return `<div class="modal-backdrop"><form class="modal quick-entry-modal" data-quick-entry-form>
+    <div class="modal-head"><h3>Hitri vnos</h3><button type="button" class="icon-btn" data-action="close">X</button></div>
+    <div class="modal-body">
+      ${presets.length ? `<div class="quick-presets">${presets.map((tx) => `<button type="button" data-quick-preset="${escapeAttr(tx.id)}"><span>${escapeHtml(tx.description)}</span><strong>${money(Math.abs(Number(tx.amount || 0)))}</strong></button>`).join("")}</div>` : ""}
+      <div class="quick-entry-grid">
+        <label>Vrsta<select name="kind">${option("strošek", defaultType)}${option("prihodek", defaultType)}</select></label>
+        <label class="quick-amount">Znesek<input name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" placeholder="0,00" autofocus required></label>
+        <label class="full">Naziv<input name="description" type="text" required></label>
+        <label>Kategorija<select name="category" data-quick-category>${quickEntryCategories(defaultType).map((category) => option(category, defaultCategory)).join("")}</select></label>
+        <label>Račun<select name="account">${(state.accounts || []).filter(isSpendableAccount).map((account) => option(account.name, defaultAccount)).join("")}</select></label>
+      </div>
+    </div>
+    <div class="modal-foot"><button type="button" class="button secondary" data-action="close">Prekliči</button><button class="button" type="submit">Shrani vnos</button></div>
+  </form></div>`;
+}
+
+function quickEntryCategories(kind) {
+  const source = kind === "prihodek" ? incomeCategories : expenseCategories;
+  return source.filter((category) => !["interni transfer", "za pregled"].includes(category));
+}
+
+function updateQuickEntryCategories(form, preferredCategory = "") {
+  const select = form?.elements?.category;
+  const kind = form?.elements?.kind?.value || "strošek";
+  if (!select) return;
+  const categories = quickEntryCategories(kind);
+  const fallback = kind === "prihodek"
+    ? state.settings.lastIncomeCategory || "plača"
+    : state.settings.lastExpenseCategory || "hrana";
+  const selected = categories.includes(preferredCategory) ? preferredCategory : categories.includes(fallback) ? fallback : categories[0];
+  select.innerHTML = categories.map((category) => option(category, selected)).join("");
+}
+
+function saveQuickEntry(values) {
+  const amount = Math.abs(Number(values.amount || 0));
+  if (!amount || !values.description) return;
+  if (values.kind === "prihodek") {
+    upsertIncome({ date: iso(currentYear, currentMonth, now.getDate()), name: values.description, amount, category: values.category, incomeType: "reden", source: "Hitri vnos", account: values.account, note: "" }, true);
+    state.settings.lastIncomeCategory = values.category;
+    state.settings.lastIncomeAccount = values.account;
+  } else {
+    upsertExpense({ date: iso(currentYear, currentMonth, now.getDate()), name: values.description, amount, category: values.category, subcategory: "", account: values.account, kind: "variabilen", note: "" }, true);
+    state.settings.lastExpenseCategory = values.category;
+    state.settings.lastExpenseAccount = values.account;
+  }
+  state.settings.lastQuickType = values.kind;
+  save();
+  closeModal();
+}
+
+function duplicateTransaction(transactionId) {
+  const tx = (state.transactions || []).find((item) => item.id === transactionId);
+  if (!tx) return;
+  if (tx.transferManaged) {
+    upsertTransfer({ date: iso(currentYear, currentMonth, now.getDate()), description: tx.description, amount: tx.amount, fromAccountId: tx.fromAccountId, toAccountId: tx.toAccountId, note: tx.note || "" });
+  } else if (Number(tx.amount || 0) < 0) {
+    upsertExpense({ date: iso(currentYear, currentMonth, now.getDate()), name: tx.description, amount: Math.abs(Number(tx.amount)), category: tx.category, subcategory: tx.subcategory || "", account: tx.account || "", kind: "variabilen", note: tx.note || "Podvojena transakcija" }, true);
+  } else {
+    upsertIncome({ date: iso(currentYear, currentMonth, now.getDate()), name: tx.description, amount: Number(tx.amount), category: tx.category, incomeType: incomeClassification(tx), source: tx.source || "Podvojena transakcija", account: tx.account || "", note: tx.note || "Podvojena transakcija" }, true);
+  }
+  save();
+  rowMenuOpen = "";
+  render();
+}
+
+function createRecurringFromTransaction(transactionId) {
+  const tx = (state.transactions || []).find((item) => item.id === transactionId);
+  if (!tx || tx.transferManaged) return;
+  const exists = (state.recurringTransactions || []).some((item) => normalizeText(item.name) === normalizeText(tx.description) && normalizeText(item.account) === normalizeText(tx.account));
+  if (exists) {
+    alert("Za to transakcijo ponavljajoče pravilo že obstaja.");
+    return;
+  }
+  const day = Math.max(1, Math.min(31, Number(String(tx.date || "").slice(8, 10)) || 1));
+  state.recurringTransactions = [{
+    id: crypto.randomUUID(),
+    kind: Number(tx.amount || 0) < 0 ? "strošek" : "prihodek",
+    name: tx.description || "Ponavljajoči vnos",
+    amount: Math.abs(Number(tx.amount || 0)),
+    category: tx.category || "drugo",
+    account: tx.account || "",
+    day,
+    active: "aktivno",
+    note: "Ustvarjeno iz obstoječe transakcije",
+  }, ...(state.recurringTransactions || [])];
+  save();
+  rowMenuOpen = "";
+  render();
 }
 
 function deleteProfileModalHtml() {
@@ -3722,7 +4273,7 @@ function defaults(collection) {
   const bankAccount = (state.accounts || []).find((account) => canonicalAssetKey(account) === "banka")?.name || "Banka";
   const revolutAccount = (state.accounts || []).find((account) => canonicalAssetKey(account) === "revolut")?.name || "Revolut";
   const defaultsByCollection = {
-    incomes: { ...base, amount: 0, category: "plača", source: "", account: bankAccount, note: "" },
+    incomes: { ...base, amount: 0, category: "plača", incomeType: "reden", source: "", account: bankAccount, note: "" },
     expenses: { ...base, amount: 0, category: "hrana", subcategory: "", account: bankAccount, kind: "variabilen", note: "" },
     transactions: { ...base, description: "", amount: 0, currency: "EUR", category: "za pregled", subcategory: "", account: revolutAccount, type: "za pregled", status: "za pregled", note: "" },
     transfers: { ...base, description: "", amount: 0, fromAccountId: "", toAccountId: "", note: "" },
@@ -3734,6 +4285,9 @@ function defaults(collection) {
     snapshots: { month: filters.month, year: filters.year, assets: monthlyData().assets, liabilities: monthlyData().liabilities, netWorth: monthlyData().netWorth, note: "" },
     monthlyNotes: { month: filters.month, year: filters.year, good: "", bad: "", next: "" },
     categoryRules: { keyword: "", category: "za pregled", subcategory: "", appliesTo: "oboje", createdAt: new Date().toISOString().slice(0, 10) },
+    budgets: { category: "hrana", monthlyAmount: 0, rollover: "ne" },
+    recurringTransactions: { kind: "strošek", name: "", amount: 0, category: "naročnine", account: bankAccount, day: 1, active: "aktivno", note: "" },
+    analysisTargets: { category: "restavracije/kava", targetShare: 8 },
   };
   return defaultsByCollection[collection];
 }
@@ -3785,7 +4339,7 @@ function download(name, text, type) {
 }
 
 function csvExport() {
-  const sections = ["transactions", "incomes", "expenses", "accounts", "investments", "liabilities", "taxes", "goals", "snapshots", "importHistory", "categoryRules"];
+  const sections = ["transactions", "incomes", "expenses", "accounts", "investments", "liabilities", "taxes", "goals", "snapshots", "monthlyNotes", "importHistory", "categoryRules", "budgets", "recurringTransactions", "monthClosures", "analysisTargets"];
   return sections.map((section) => {
     const rows = state[section];
     if (!rows.length) return `${section}\n`;
@@ -4014,6 +4568,31 @@ function bind() {
     render();
   }));
   document.querySelectorAll("[data-action='close']").forEach((btn) => btn.addEventListener("click", closeModal));
+  document.querySelectorAll("[data-action='close-month']").forEach((btn) => btn.addEventListener("click", openMonthCloseModal));
+  document.querySelectorAll("[data-create-recurring]").forEach((btn) => btn.addEventListener("click", () => createRecurringTransaction(btn.dataset.createRecurring)));
+  document.querySelectorAll("[data-close-month-form]").forEach((form) => form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    closeMonth(Object.fromEntries(new FormData(form).entries()));
+  }));
+  document.querySelectorAll("[data-quick-entry-form]").forEach((form) => form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    saveQuickEntry(Object.fromEntries(new FormData(form).entries()));
+  }));
+  document.querySelectorAll("[data-quick-entry-form] select[name='kind']").forEach((select) => select.addEventListener("change", () => {
+    updateQuickEntryCategories(select.form);
+  }));
+  document.querySelectorAll("[data-quick-preset]").forEach((btn) => btn.addEventListener("click", () => {
+    const tx = (state.transactions || []).find((item) => item.id === btn.dataset.quickPreset);
+    const form = btn.closest("form");
+    if (!tx || !form) return;
+    form.elements.kind.value = Number(tx.amount || 0) < 0 ? "strošek" : "prihodek";
+    updateQuickEntryCategories(form, tx.category || "drugo");
+    form.elements.amount.value = Math.abs(Number(tx.amount || 0));
+    form.elements.description.value = tx.description || "";
+    form.elements.account.value = tx.account || "";
+  }));
+  document.querySelectorAll("[data-duplicate-transaction]").forEach((btn) => btn.addEventListener("click", () => duplicateTransaction(btn.dataset.duplicateTransaction)));
+  document.querySelectorAll("[data-recurring-from-transaction]").forEach((btn) => btn.addEventListener("click", () => createRecurringFromTransaction(btn.dataset.recurringFromTransaction)));
   document.querySelectorAll("[data-action='theme']").forEach((btn) => btn.addEventListener("click", () => {
     state.settings.theme = state.settings.theme === "dark" ? "light" : "dark";
     save();
@@ -4059,13 +4638,6 @@ function bind() {
       lastCloudPayload = cloudPayload();
       cloudStatus = { state: "success", message: "Povezava je preverjena. Profile sinhroniziraj loceno; podatke prenesi ali poslji rocno." };
       render();
-      return;
-      const loaded = await pullGoogleSheets({ quiet: true });
-      if (loaded === false) {
-        cloudAutoSyncPaused = true;
-        cloudStatus = { state: "error", message: "V Google Sheets ni podatkov za ta profil. Samodejno pošiljanje je varnostno ustavljeno." };
-        render();
-      }
     } catch {
       cloudReady = true;
       render();
@@ -4107,7 +4679,12 @@ function bind() {
     const file = importInput.files[0];
     if (!file) return;
     try {
-      state = importedState(JSON.parse(await file.text()));
+      const incoming = importedState(JSON.parse(await file.text()));
+      const incomingTime = timestampValue(incoming.meta?.updatedAt);
+      const currentTime = timestampValue(state.meta?.updatedAt);
+      if (incomingTime && currentTime && incomingTime < currentTime && !confirm("Uvožena datoteka je starejša od trenutnih podatkov. Vseeno nadaljujem?")) return;
+      createBackup("pred JSON uvozom", state);
+      state = incoming;
       save();
       render();
     } catch {
@@ -4157,6 +4734,14 @@ function bind() {
   document.querySelectorAll("[data-action='confirm-import']").forEach((btn) => btn.addEventListener("click", confirmImportDraft));
   document.querySelectorAll("[data-action='undo-last-import']").forEach((btn) => btn.addEventListener("click", undoLastImport));
   document.querySelectorAll("[data-action='export-json']").forEach((btn) => btn.addEventListener("click", () => download("finance-dashboard.json", JSON.stringify(state, null, 2), "application/json")));
+  document.querySelectorAll("[data-action='create-backup']").forEach((btn) => btn.addEventListener("click", () => {
+    createBackup("ročna", state);
+    render();
+  }));
+  document.querySelectorAll("[data-restore-backup]").forEach((btn) => btn.addEventListener("click", () => restoreBackup(btn.dataset.restoreBackup)));
+  document.querySelectorAll("[data-delete-backup]").forEach((btn) => btn.addEventListener("click", () => {
+    if (confirm("Izbrišem to lokalno varnostno kopijo?")) deleteBackup(btn.dataset.deleteBackup);
+  }));
   document.querySelectorAll("[data-action='export-csv']").forEach((btn) => btn.addEventListener("click", () => download("finance-dashboard.csv", csvExport(), "text/csv")));
   document.querySelectorAll("[data-action='cloud-pull']").forEach((btn) => btn.addEventListener("click", () => pullGoogleSheets({ confirmOverwrite: true })));
   document.querySelectorAll("[data-action='cloud-push']").forEach((btn) => btn.addEventListener("click", () => pushGoogleSheets({ confirmOverwrite: true })));
@@ -4195,6 +4780,7 @@ function bind() {
   }));
   document.querySelectorAll("[data-action='clear']").forEach((btn) => btn.addEventListener("click", () => {
     if (!confirm("Res trajno izbrišem vse finančne podatke? Nastavitve videza bodo ostale.")) return;
+    createBackup("pred izbrisom vseh podatkov", state);
     state = emptyState({
       theme: state.settings.theme,
       currency: state.settings.currency,
