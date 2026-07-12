@@ -8,6 +8,8 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
+const APP_VERSION = "56";
+const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
 const currentYear = now.getFullYear();
@@ -458,16 +460,24 @@ function loadBackendConfig() {
   try {
     const stored = JSON.parse(localStorage.getItem(BACKEND_CONFIG_KEY) || "{}");
     const legacy = state?.settings?.googleSheets || {};
-    return {
+    const merged = {
       enabled: Boolean(DEFAULT_CLOUD_ENDPOINT),
       endpoint: DEFAULT_CLOUD_ENDPOINT,
       syncKey: "",
       lastSyncByProfile: {},
+      configByProfile: {},
       ...legacy,
       ...stored,
     };
+    if (!merged.configByProfile || typeof merged.configByProfile !== "object") merged.configByProfile = {};
+    if (!merged.lastSyncByProfile || typeof merged.lastSyncByProfile !== "object") merged.lastSyncByProfile = {};
+    return {
+      ...merged,
+      configByProfile: merged.configByProfile,
+      lastSyncByProfile: merged.lastSyncByProfile,
+    };
   } catch {
-    return { enabled: Boolean(DEFAULT_CLOUD_ENDPOINT), endpoint: DEFAULT_CLOUD_ENDPOINT, syncKey: "", lastSyncByProfile: {} };
+    return { enabled: Boolean(DEFAULT_CLOUD_ENDPOINT), endpoint: DEFAULT_CLOUD_ENDPOINT, syncKey: "", lastSyncByProfile: {}, configByProfile: {} };
   }
 }
 
@@ -936,9 +946,16 @@ function deleteBackup(backupId) {
 
 function save({ touch = true } = {}) {
   if (!currentProfile) return;
+  state.meta = {
+    schemaVersion: DATA_SCHEMA_VERSION,
+    appVersion: APP_VERSION,
+    ...(state.meta || {}),
+  };
   if (touch) {
     state.meta = {
       ...(state.meta || {}),
+      schemaVersion: DATA_SCHEMA_VERSION,
+      appVersion: APP_VERSION,
       updatedAt: new Date().toISOString(),
       revision: Number(state.meta?.revision || 0) + 1,
     };
@@ -979,18 +996,44 @@ function hasPendingCloudSave() {
 
 function googleSheetsConfig() {
   const serverManaged = hasServerManagedCloudEndpoint();
+  const profileId = currentProfile?.id || "";
+  const profileConfig = profileId && backendConfig.configByProfile && typeof backendConfig.configByProfile === "object"
+    ? backendConfig.configByProfile[profileId] || {}
+    : {};
   const config = {
     enabled: false,
     endpoint: "",
     syncKey: "",
     lastSyncAt: "",
     ...backendConfig,
-    lastSyncAt: backendConfig.lastSyncByProfile?.[currentProfile?.id] || "",
+    ...profileConfig,
+    lastSyncAt: backendConfig.lastSyncByProfile?.[profileId] || profileConfig.lastSyncAt || "",
   };
   return {
     ...config,
     enabled: serverManaged ? true : config.enabled,
+    configByProfile: backendConfig.configByProfile || {},
+    lastSyncByProfile: backendConfig.lastSyncByProfile || {},
   };
+}
+
+function saveGoogleSheetsConfigForCurrentProfile(values = {}) {
+  if (!currentProfile) return;
+  const profileId = currentProfile.id;
+  const nextProfileConfig = {
+    ...(backendConfig.configByProfile?.[profileId] || {}),
+    enabled: true,
+    endpoint: String(values.endpoint || "").trim(),
+    syncKey: normalizeSecret(values.syncKey),
+  };
+  backendConfig = {
+    ...backendConfig,
+    configByProfile: {
+      ...(backendConfig.configByProfile || {}),
+      [profileId]: nextProfileConfig,
+    },
+  };
+  saveBackendConfig();
 }
 
 function hasServerManagedCloudEndpoint() {
@@ -1003,8 +1046,30 @@ function canUseCloudEndpoint(config = googleSheetsConfig()) {
 
 function cloudPayload() {
   const data = structuredClone(state);
+  data.meta = {
+    schemaVersion: DATA_SCHEMA_VERSION,
+    appVersion: APP_VERSION,
+    ...(data.meta || {}),
+  };
   if (data.settings?.googleSheets) delete data.settings.googleSheets;
   return JSON.stringify(data);
+}
+
+function remoteStateSchema(data, fallback = {}) {
+  return Number(
+    data?.meta?.schemaVersion
+      || data?.schemaVersion
+      || fallback.schemaVersion
+      || fallback.dataSchemaVersion
+      || 0
+  );
+}
+
+function assertCompatibleRemoteState(data, fallback = {}) {
+  const schemaVersion = remoteStateSchema(data, fallback);
+  if (schemaVersion > DATA_SCHEMA_VERSION) {
+    throw new Error(`Podatki so bili shranjeni z novejso verzijo aplikacije (shema ${schemaVersion}). Posodobi PWA/EXE pred sinhronizacijo, da ne pride do izgube podatkov.`);
+  }
 }
 
 function hasMeaningfulFinancialData(data = state) {
@@ -1266,6 +1331,7 @@ async function pullGoogleSheets({ confirmOverwrite = false, quiet = false } = {}
       cloudStatus = { state: "error", message: `Google Sheet je povezan, vendar nima podatkov za profil "${currentProfile?.id || "neznan"}".` };
       return false;
     }
+    assertCompatibleRemoteState(result.data, result);
     const localUpdated = timestampValue(state.meta?.updatedAt);
     const remoteUpdated = timestampValue(result.data?.meta?.updatedAt || result.updatedAt);
     const payloadDiffers = JSON.stringify(result.data) !== cloudPayload();
@@ -1318,6 +1384,7 @@ async function pushGoogleSheets({ confirmOverwrite = false, quiet = false } = {}
   }
   try {
     const freshness = await remoteFreshness();
+    assertCompatibleRemoteState(null, freshness);
     if (freshness.isNewer) {
       if (!confirmOverwrite) {
         cloudAutoSyncPaused = true;
@@ -1378,6 +1445,8 @@ async function remoteFreshness() {
   const localTime = timestampValue(currentProfileLastSync());
   return {
     updatedAt: result.updatedAt || "",
+    schemaVersion: remoteStateSchema(null, result),
+    appVersion: result.appVersion || "",
     isNewer: Boolean(remoteTime && (!localTime || remoteTime > localTime + 1000)),
   };
 }
@@ -1532,7 +1601,7 @@ function snapshotForMonth(month, year) {
 
 function emptyState(settings = {}) {
   return {
-    meta: { updatedAt: "", revision: 0 },
+    meta: { updatedAt: "", revision: 0, schemaVersion: DATA_SCHEMA_VERSION, appVersion: APP_VERSION },
     settings: { ...seedData.settings, setupCompleted: false, ...settings },
     incomes: [],
     expenses: [],
@@ -1555,8 +1624,15 @@ function emptyState(settings = {}) {
 
 function importedState(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Neveljaven JSON");
+  assertCompatibleRemoteState(data);
   const next = { ...emptyState(), ...data };
-  next.meta = { updatedAt: "", revision: 0, ...(data.meta && typeof data.meta === "object" ? data.meta : {}) };
+  next.meta = {
+    updatedAt: "",
+    revision: 0,
+    ...(data.meta && typeof data.meta === "object" ? data.meta : {}),
+    schemaVersion: DATA_SCHEMA_VERSION,
+    appVersion: APP_VERSION,
+  };
   const collections = ["incomes", "expenses", "transactions", "accounts", "investments", "liabilities", "taxes", "goals", "snapshots", "monthlyNotes", "importHistory", "categoryRules", "budgets", "recurringTransactions", "monthClosures", "analysisTargets"];
   for (const key of collections) {
     if (!Array.isArray(next[key])) next[key] = [];
@@ -3902,7 +3978,6 @@ function backupHistoryView() {
 
 function settingsSyncView() {
   const sheets = googleSheetsConfig();
-  if (currentProfile.role !== "admin") return userCloudSettingsView(sheets);
   const serverManagedAuth = hasServerManagedCloudAuth();
   return `<div class="card cloud-settings">
     <div class="card-header"><div><h3>Google Sheets</h3><p>Sinhronizacija med napravami.</p></div><span class="sync-badge ${cloudStatus.state}">${cloudStatus.state === "success" ? "Povezano" : cloudStatus.state === "pending" ? "Povezujem" : "Preveri povezavo"}</span></div>
@@ -3913,7 +3988,7 @@ function settingsSyncView() {
         <label class="full">Sinhronizacijski ključ<input type="password" name="syncKey" value="${escapeAttr(sheets.syncKey)}" autocomplete="off" placeholder="${serverManagedAuth ? "Nastavljen v okolju" : "Enak ključ kot v Apps Script kodi"}" ${serverManagedAuth ? "" : "required"}></label>
         <div class="full cloud-actions"><button class="button" type="submit">Preveri povezavo</button>${sheets.enabled ? `<button class="button secondary" type="button" data-action="cloud-pull">Prenesi</button><button class="button secondary" type="button" data-action="cloud-push">Pošlji</button><button class="button danger ghost" type="button" data-action="cloud-disconnect">Odklopi</button>` : ""}</div>
       </form>
-      <p class="settings-note">Samodejna sinhronizacija deluje po vsaki spremembi. Ročni akciji uporabi samo pri obnovitvi ali menjavi naprave.</p>
+      <p class="settings-note">Ta povezava velja samo za profil ${escapeHtml(currentProfile.name)}. Samodejna sinhronizacija deluje po vsaki spremembi; profili se med seboj ne prepisujejo.</p>
     </div>
   </div>`;
 }
@@ -3996,6 +4071,7 @@ function legacySettingsView() {
 
 function userCloudSettingsView(sheets) {
   const usable = canUseCloudEndpoint(sheets);
+  const serverManagedAuth = hasServerManagedCloudAuth();
   return `<div class="card cloud-settings">
     <div class="card-header">
       <div><h3>Google Sheets backend</h3><p>Sinhronizacija podatkov tega profila.</p></div>
@@ -4010,10 +4086,18 @@ function userCloudSettingsView(sheets) {
         <span class="sync-dot"></span>
         <div><strong>${escapeHtml(cloudStatus.message)}</strong>${sheets.lastSyncAt ? `<small>Zadnja uspešna sinhronizacija: ${formatSyncTime(sheets.lastSyncAt)}</small>` : ""}</div>
       </div>
-      <div class="cloud-actions">
-        <button class="button secondary" type="button" data-action="cloud-pull" ${usable ? "" : "disabled"}>Prenesi iz Sheets</button>
-        <button class="button secondary" type="button" data-action="cloud-push" ${usable ? "" : "disabled"}>Pošlji v Sheets</button>
-      </div>
+      <form class="form-grid" data-google-sheets-form>
+        <label class="full">URL spletne aplikacije
+          <input type="url" name="endpoint" value="${escapeAttr(sheets.endpoint)}" placeholder="https://script.google.com/macros/s/.../exec">
+        </label>
+        <label class="full">Sinhronizacijski ključ
+          <input type="password" name="syncKey" value="${escapeAttr(sheets.syncKey)}" autocomplete="off" placeholder="${serverManagedAuth ? "Nastavljen v okolju" : "Enak ključ kot v Apps Script kodi"}" ${serverManagedAuth ? "" : "required"}>
+        </label>
+        <div class="full cloud-actions">
+          <button class="button" type="submit">${usable ? "Preveri povezavo" : "Poveži Google Sheets"}</button>
+          ${usable ? `<button class="button secondary" type="button" data-action="cloud-pull">Prenesi iz Sheets</button><button class="button secondary" type="button" data-action="cloud-push">Pošlji v Sheets</button><button class="button danger ghost" type="button" data-action="cloud-disconnect">Odklopi</button>` : ""}
+        </div>
+      </form>
       <p class="settings-note">Tvoji podatki so ločeni od drugih profilov in se sinhronizirajo pod internim ID-jem profila.</p>
     </div>
   </div>`;
@@ -4793,36 +4877,28 @@ function bind() {
     event.preventDefault();
     const values = Object.fromEntries(new FormData(form).entries());
     cloudReady = false;
-    if (currentProfile?.role !== "admin") return;
-    backendConfig = {
-      ...backendConfig,
-      enabled: true,
-      endpoint: String(values.endpoint || "").trim(),
-      syncKey: normalizeSecret(values.syncKey),
-    };
+    saveGoogleSheetsConfigForCurrentProfile(values);
     cloudAutoSyncPaused = false;
-    if (!hasValidSyncKey(backendConfig) && !hasServerManagedCloudAuth()) {
+    const config = googleSheetsConfig();
+    if (!hasValidSyncKey(config) && !hasServerManagedCloudAuth()) {
       cloudStatus = { state: "error", message: "Izberi dolg zasebni ključ in istega vpiši tudi v Code.gs." };
-      saveBackendConfig();
       render();
       return;
     }
-    const endpointError = googleSheetsEndpointError(backendConfig.endpoint);
+    const endpointError = googleSheetsEndpointError(config.endpoint);
     if (endpointError) {
       cloudStatus = { state: "error", message: endpointError };
       cloudAutoSyncPaused = true;
-      saveBackendConfig();
       render();
       return;
     }
-    saveBackendConfig();
     try {
       cloudAutoSyncPaused = true;
       await testGoogleSheetsConnection();
       cloudReady = true;
       cloudAutoSyncPaused = false;
       lastCloudPayload = cloudPayload();
-      cloudStatus = { state: "success", message: "Povezava je preverjena. Profile sinhroniziraj loceno; podatke prenesi ali poslji rocno." };
+      cloudStatus = { state: "success", message: `Povezava je preverjena za profil "${currentProfile.name}". Podatki tega profila se sinhronizirajo loceno.` };
       if (hasPendingCloudSave()) queueCloudSave();
       render();
     } catch {
@@ -4933,14 +5009,22 @@ function bind() {
   document.querySelectorAll("[data-action='cloud-pull']").forEach((btn) => btn.addEventListener("click", () => pullGoogleSheets({ confirmOverwrite: true })));
   document.querySelectorAll("[data-action='cloud-push']").forEach((btn) => btn.addEventListener("click", () => pushGoogleSheets({ confirmOverwrite: true })));
   document.querySelectorAll("[data-action='cloud-disconnect']").forEach((btn) => btn.addEventListener("click", () => {
-    if (currentProfile?.role !== "admin") return;
-    if (!confirm("Odklopim Google Sheets? Lokalni podatki bodo ostali nespremenjeni.")) return;
+    if (!confirm(`Odklopim Google Sheets za profil "${currentProfile.name}"? Lokalni podatki bodo ostali nespremenjeni.`)) return;
     clearTimeout(cloudSaveTimer);
     cloudPendingSave = false;
-    backendConfig = { ...backendConfig, enabled: false };
+    backendConfig = {
+      ...backendConfig,
+      configByProfile: {
+        ...(backendConfig.configByProfile || {}),
+        [currentProfile.id]: {
+          ...(backendConfig.configByProfile?.[currentProfile.id] || {}),
+          enabled: false,
+        },
+      },
+    };
     cloudAutoSyncPaused = false;
     saveBackendConfig();
-    cloudStatus = { state: "local", message: "Google Sheets je odklopljen. Podatki ostajajo lokalno." };
+    cloudStatus = { state: "local", message: `Google Sheets je odklopljen za profil "${currentProfile.name}". Podatki ostajajo lokalno.` };
     save();
     render();
   }));
