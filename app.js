@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "56";
+const APP_VERSION = "58";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -990,8 +990,10 @@ function hasPendingCloudSave() {
   if (!currentProfile) return false;
   if (localStorage.getItem(cloudPendingStorageKey())) return true;
   const localUpdated = timestampValue(state.meta?.updatedAt);
-  const lastSync = timestampValue(currentProfileLastSync());
-  return Boolean(hasMeaningfulFinancialData(state) && localUpdated && localUpdated > lastSync + 1000);
+  const syncedLocal = timestampValue(state.meta?.cloudSync?.localUpdatedAt);
+  const fallbackSync = timestampValue(currentProfileLastSync());
+  const baseline = syncedLocal || fallbackSync;
+  return Boolean(hasMeaningfulFinancialData(state) && localUpdated && baseline && localUpdated > baseline + 1000);
 }
 
 function googleSheetsConfig() {
@@ -1051,6 +1053,7 @@ function cloudPayload() {
     appVersion: APP_VERSION,
     ...(data.meta || {}),
   };
+  delete data.meta.cloudSync;
   if (data.settings?.googleSheets) delete data.settings.googleSheets;
   return JSON.stringify(data);
 }
@@ -1343,11 +1346,7 @@ async function pullGoogleSheets({ confirmOverwrite = false, quiet = false } = {}
     if (hasMeaningfulFinancialData(state) && payloadDiffers) createBackup("pred prenosom iz Sheets", state);
     const imported = importedState(result.data);
     state = imported;
-    backendConfig.lastSyncByProfile = {
-      ...(backendConfig.lastSyncByProfile || {}),
-      [currentProfile.id]: result.updatedAt || new Date().toISOString(),
-    };
-    saveBackendConfig();
+    markStateSyncedWithCloud(result.updatedAt || result.data?.meta?.updatedAt || new Date().toISOString());
     lastCloudPayload = cloudPayload();
     clearCloudSavePending();
     localStorage.setItem(profileStorageKey(), JSON.stringify(state));
@@ -1396,12 +1395,8 @@ async function pushGoogleSheets({ confirmOverwrite = false, quiet = false } = {}
     }
     const payload = cloudPayload();
     const result = await cloudRequest("save", JSON.parse(payload));
-    lastCloudPayload = payload;
-    backendConfig.lastSyncByProfile = {
-      ...(backendConfig.lastSyncByProfile || {}),
-      [currentProfile.id]: result.updatedAt || new Date().toISOString(),
-    };
-    saveBackendConfig();
+    markStateSyncedWithCloud(result.updatedAt || new Date().toISOString());
+    lastCloudPayload = cloudPayload();
     clearCloudSavePending();
     localStorage.setItem(profileStorageKey(), JSON.stringify(state));
     cloudStatus = { state: "success", message: `Sinhronizirano ${formatSyncTime(backendConfig.lastSyncByProfile[currentProfile.id])}.` };
@@ -1439,10 +1434,31 @@ function currentProfileLastSync() {
   return backendConfig.lastSyncByProfile?.[currentProfile?.id] || "";
 }
 
+function currentSyncedRemoteUpdatedAt() {
+  return state.meta?.cloudSync?.remoteUpdatedAt || currentProfileLastSync();
+}
+
+function markStateSyncedWithCloud(remoteUpdatedAt) {
+  const syncedRemote = remoteUpdatedAt || new Date().toISOString();
+  state.meta = {
+    ...(state.meta || {}),
+    cloudSync: {
+      remoteUpdatedAt: syncedRemote,
+      localUpdatedAt: state.meta?.updatedAt || "",
+      syncedAt: new Date().toISOString(),
+    },
+  };
+  backendConfig.lastSyncByProfile = {
+    ...(backendConfig.lastSyncByProfile || {}),
+    [currentProfile.id]: syncedRemote,
+  };
+  saveBackendConfig();
+}
+
 async function remoteFreshness() {
   const result = await cloudRequest("health");
   const remoteTime = timestampValue(result.updatedAt);
-  const localTime = timestampValue(currentProfileLastSync());
+  const localTime = timestampValue(currentSyncedRemoteUpdatedAt());
   return {
     updatedAt: result.updatedAt || "",
     schemaVersion: remoteStateSchema(null, result),
@@ -3184,7 +3200,7 @@ function importsView() {
       <div class="card-body">
         <div class="import-drop">
           <label>Naloži CSV datoteko iz Revoluta
-            <input type="file" accept=".csv,text/csv" data-action="import-revolut-csv">
+            <input type="file" accept=".csv,.xml,.xls,text/csv,text/xml,application/xml" data-action="import-revolut-csv">
           </label>
           <p>Datoteka se obdela lokalno v brskalniku. Podatki se ne pošiljajo zunanjim servisom.</p>
         </div>
@@ -3489,7 +3505,7 @@ function categoryRulesTable(rules) {
 
 async function loadRevolutCsv(file) {
   const text = await file.text();
-  const parsed = parseCsv(text);
+  const parsed = parseTransactionFile(text);
   const headers = parsed.headers;
   importDraft = {
     fileName: file.name,
@@ -3502,6 +3518,15 @@ async function loadRevolutCsv(file) {
   rebuildImportDraft();
   active = "imports";
   render();
+}
+
+function parseTransactionFile(text) {
+  const trimmed = String(text || "").replace(/^\uFEFF/, "").trimStart();
+  if (trimmed.startsWith("<")) {
+    const parsedXml = parseSpreadsheetXml(trimmed);
+    if (parsedXml.headers.length) return parsedXml;
+  }
+  return parseCsv(text);
 }
 
 function parseCsv(text) {
@@ -3535,6 +3560,17 @@ function parseCsv(text) {
   if (current.some((cell) => cell.trim() !== "")) rows.push(current);
   const headers = rows.shift()?.map((h) => h.trim()) || [];
   return { headers, rows: rows.map((row) => Object.fromEntries(headers.map((header, index) => [header, (row[index] || "").trim()]))) };
+}
+
+function parseSpreadsheetXml(text) {
+  const document = new DOMParser().parseFromString(text, "application/xml");
+  if (document.querySelector("parsererror")) return { headers: [], rows: [] };
+  const xmlRows = [...document.querySelectorAll("Row, ss\\:Row")];
+  const tableRows = xmlRows.map((row) => [...row.querySelectorAll("Cell, ss\\:Cell")].map((cell) =>
+    (cell.querySelector("Data, ss\\:Data")?.textContent || cell.textContent || "").trim()
+  )).filter((row) => row.some((cell) => cell !== ""));
+  const headers = tableRows.shift()?.map((header) => header.trim()) || [];
+  return { headers, rows: tableRows.map((row) => Object.fromEntries(headers.map((header, index) => [header, (row[index] || "").trim()]))) };
 }
 
 function detectRevolutMapping(headers) {
@@ -3582,7 +3618,19 @@ function rebuildImportDraft() {
       rememberRule: learned?.rememberRule || false,
     };
     if (!tx.date || !Number.isFinite(tx.amount) || tx.amount === 0) tx.status = "nepopolno";
-    if (isInternalTransfer(tx)) tx.status = "interni transfer";
+    if (tx.status !== "nepopolno" && hasMatchingManualTransfer(tx)) {
+      tx.status = "možen dvojnik";
+      tx.category = "interni transfer";
+      tx.subcategory = "že ročno zabeležen prenos";
+      tx.confidence = "high";
+      tx.ruleSource = "ujemanje z ročnim prenosom";
+    } else if (tx.status !== "nepopolno" && hasOppositeImportTransfer(tx, importDraft.rows, index)) {
+      tx.status = "interni transfer";
+      tx.category = "interni transfer";
+      tx.subcategory = "ujemajoč prenos";
+      tx.confidence = "high";
+      tx.ruleSource = "ujemanje z nasprotno transakcijo";
+    } else if (isInternalTransfer(tx)) tx.status = "interni transfer";
     if ((tx.confidence === "low" || tx.category === "za pregled" || tx.subcategory === "za pregled") && tx.status === "pripravljeno") tx.status = "za pregled";
     if (isDuplicateTransaction(tx)) tx.status = "možen dvojnik";
     return tx;
@@ -3729,7 +3777,62 @@ function findUserCategoryRule(text, amount) {
 
 function isInternalTransfer(tx) {
   const text = normalizeText(`${tx.description} ${tx.reference}`);
-  return tx.category === "interni transfer" || tx.category === "gotovina" || /(top-up|top up|own account|lastni racun|to self|from self|between accounts|savings vault)/.test(text);
+  return tx.category === "interni transfer" || tx.category === "gotovina" || isTransferLikeText(text);
+}
+
+function isTransferLikeText(text) {
+  return /(top-up|top up|own account|lastni racun|lastni račun|to self|from self|between accounts|savings vault|bank transfer|sepa|nakazilo|transfer|prenos)/.test(normalizeText(text));
+}
+
+function amountCents(value) {
+  return Math.round(Math.abs(Number(value || 0)) * 100);
+}
+
+function daysBetweenDates(a, b) {
+  const first = new Date(a || "").getTime();
+  const second = new Date(b || "").getTime();
+  if (!Number.isFinite(first) || !Number.isFinite(second)) return Infinity;
+  return Math.abs(first - second) / 86400000;
+}
+
+function accountLooksLikeRevolut(account) {
+  return canonicalAssetKey(account) === "revolut" || normalizeText(account?.name || account || "").includes("revolut");
+}
+
+function transferAccountDirectionMatches(tx, transfer) {
+  const fromAccount = (state.accounts || []).find((account) => account.id === transfer.fromAccountId);
+  const toAccount = (state.accounts || []).find((account) => account.id === transfer.toAccountId);
+  if (Number(tx.amount || 0) > 0) return accountLooksLikeRevolut(toAccount) || accountLooksLikeRevolut(tx.account);
+  if (Number(tx.amount || 0) < 0) return accountLooksLikeRevolut(fromAccount) || accountLooksLikeRevolut(tx.account);
+  return false;
+}
+
+function hasMatchingManualTransfer(tx) {
+  const cents = amountCents(tx.amount);
+  if (!cents || !tx.date) return false;
+  return (state.transactions || []).some((item) =>
+    item.transferManaged
+    && item.status === "interni transfer"
+    && amountCents(item.amount || item.balanceImpact) === cents
+    && daysBetweenDates(item.date, tx.date) <= 4
+    && transferAccountDirectionMatches(tx, item)
+  );
+}
+
+function hasOppositeImportTransfer(tx, rows, currentIndex) {
+  const cents = amountCents(tx.amount);
+  if (!cents || !tx.date) return false;
+  const currentText = normalizeText(`${tx.description} ${tx.reference} ${tx.kind}`);
+  return (rows || []).some((row, index) => {
+    if (index === currentIndex) return false;
+    const amount = parseAmount(readMapped(row, "amount"));
+    if (!amount || Math.sign(amount) === Math.sign(tx.amount)) return false;
+    if (amountCents(amount) !== cents) return false;
+    const date = normalizeDate(readMapped(row, "date"));
+    if (daysBetweenDates(date, tx.date) > 2) return false;
+    const text = normalizeText(`${readMapped(row, "description")} ${readMapped(row, "reference")} ${readMapped(row, "type")}`);
+    return isTransferLikeText(currentText) || isTransferLikeText(text);
+  });
 }
 
 function transactionKey(tx) {
