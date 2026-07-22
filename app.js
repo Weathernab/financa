@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "58";
+const APP_VERSION = "60";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -239,7 +239,7 @@ const navItems = [
   ["goals", "Cilji", "Napredek finančnih ciljev"],
   ["monthly", "Mesečni pregled", "Kaj se je zgodilo ta mesec"],
   ["analytics", "Analitika", "Preprosti trendi in razdelitve"],
-  ["imports", "Uvoz podatkov", "Revolut CSV uvoz transakcij"],
+  ["imports", "Uvoz podatkov", "Uvoz bančnih in Revolut transakcij"],
   ["setup", "Setup", "Vodeni popis premoženja in dolgov"],
   ["settings", "Nastavitve", "Uvoz, izvoz in tema"],
 ];
@@ -1836,6 +1836,16 @@ function isSpendableAccount(account) {
     && !type.includes("nepremic");
 }
 
+function isPrimaryPaymentAccount(account) {
+  const key = canonicalAssetKey(account);
+  return key === "banka" || key === "revolut";
+}
+
+function isPrimaryPaymentAccountReference(reference) {
+  const account = findExpenseAccount(reference);
+  return Boolean(account && isPrimaryPaymentAccount(account));
+}
+
 function findExpenseAccount(reference) {
   const normalized = normalizeText(reference);
   if (!normalized) return null;
@@ -1952,6 +1962,10 @@ function syncExpenseTransaction(expense) {
   const existing = (state.transactions || []).find((item) =>
     item.id === expense.linkedTransactionId || item.linkedExpenseId === expense.id
   );
+  if (!isPrimaryPaymentAccountReference(expense.account)) {
+    if (existing) removeRecordById("transactions", existing.id);
+    return { ...expense, linkedTransactionId: "" };
+  }
   const transaction = {
     ...(existing || {}),
     id: existing?.id || crypto.randomUUID(),
@@ -1981,6 +1995,12 @@ function syncIncomeTransaction(income) {
   const existing = (state.transactions || []).find((item) =>
     item.id === income.linkedTransactionId || item.linkedIncomeId === income.id
   );
+  if (!isPrimaryPaymentAccountReference(income.account || income.source)) {
+    if (existing) removeRecordById("transactions", existing.id);
+    const linkedIncome = { ...income, linkedTransactionId: "" };
+    replaceRecordById("incomes", linkedIncome.id, linkedIncome);
+    return linkedIncome;
+  }
   const transaction = {
     ...(existing || {}),
     id: existing?.id || crypto.randomUUID(),
@@ -3410,6 +3430,8 @@ function importMappingHtml() {
     ["date", "datum"],
     ["description", "opis"],
     ["amount", "znesek"],
+    ["debit", "breme"],
+    ["credit", "dobro"],
     ["currency", "valuta"],
     ["balance", "stanje"],
     ["type", "tip"],
@@ -3504,20 +3526,36 @@ function categoryRulesTable(rules) {
 }
 
 async function loadRevolutCsv(file) {
-  const text = await file.text();
-  const parsed = parseTransactionFile(text);
+  const parsed = await parseTransactionFileFromFile(file);
   const headers = parsed.headers;
   importDraft = {
     fileName: file.name,
     headers,
     rows: parsed.rows,
-    account: "Revolut",
+    account: parsed.suggestedAccount || "Revolut",
+    sourceLabel: parsed.sourceLabel || "Revolut CSV",
     mapping: detectRevolutMapping(headers),
     transactions: [],
   };
   rebuildImportDraft();
   active = "imports";
   render();
+}
+
+async function parseTransactionFileFromFile(file) {
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  const isCompoundExcel = bytes[0] === 0xd0 && bytes[1] === 0xcf && bytes[2] === 0x11 && bytes[3] === 0xe0;
+  if (isCompoundExcel || /\.xls$/i.test(file.name || "")) {
+    const parsedXls = parseLegacyXls(buffer);
+    if (parsedXls.headers.length) return { ...parsedXls, sourceLabel: "Bančni XLS", suggestedAccount: defaultBankImportAccount() };
+  }
+  const text = new TextDecoder("utf-8").decode(bytes);
+  return parseTransactionFile(text);
+}
+
+function defaultBankImportAccount() {
+  return (state.accounts || []).find((account) => canonicalAssetKey(account) === "banka")?.name || "Banka";
 }
 
 function parseTransactionFile(text) {
@@ -3573,27 +3611,273 @@ function parseSpreadsheetXml(text) {
   return { headers, rows: tableRows.map((row) => Object.fromEntries(headers.map((header, index) => [header, (row[index] || "").trim()]))) };
 }
 
+function parseLegacyXls(arrayBuffer) {
+  const workbook = extractCompoundWorkbookStream(arrayBuffer);
+  if (!workbook?.length) return { headers: [], rows: [] };
+  const records = biffRecords(workbook);
+  const strings = parseBiffSharedStrings(records);
+  const cells = new Map();
+  for (const record of records) {
+    const data = record.data;
+    if (data.byteLength < 6) continue;
+    const row = data.getUint16(0, true);
+    const col = data.getUint16(2, true);
+    if (record.type === 0x00fd && data.byteLength >= 10) {
+      cells.set(`${row}:${col}`, strings[data.getUint32(6, true)] || "");
+    } else if (record.type === 0x0203 && data.byteLength >= 14) {
+      cells.set(`${row}:${col}`, data.getFloat64(6, true));
+    } else if (record.type === 0x027e && data.byteLength >= 10) {
+      cells.set(`${row}:${col}`, decodeBiffRk(data.getUint32(6, true)));
+    } else if (record.type === 0x00bd && data.byteLength >= 10) {
+      const firstCol = data.getUint16(2, true);
+      const lastCol = data.getUint16(data.byteLength - 2, true);
+      for (let offset = 4, currentCol = firstCol; currentCol <= lastCol && offset + 6 <= data.byteLength - 2; currentCol++, offset += 6) {
+        cells.set(`${row}:${currentCol}`, decodeBiffRk(data.getUint32(offset + 2, true)));
+      }
+    } else if (record.type === 0x0204 && data.byteLength >= 8) {
+      cells.set(`${row}:${col}`, parseBiffInlineString(data, 6));
+    }
+  }
+  return tableFromCellMap(cells);
+}
+
+function extractCompoundWorkbookStream(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  const view = new DataView(arrayBuffer);
+  if (bytes[0] !== 0xd0 || bytes[1] !== 0xcf || bytes[2] !== 0x11 || bytes[3] !== 0xe0) return null;
+  const sectorSize = 1 << view.getUint16(30, true);
+  const miniCutoff = view.getUint32(56, true);
+  const firstDirSector = view.getInt32(48, true);
+  const difat = [];
+  for (let offset = 76; offset < 512; offset += 4) {
+    const sid = view.getInt32(offset, true);
+    if (sid >= 0) difat.push(sid);
+  }
+  const fat = [];
+  for (const sid of difat) {
+    const offset = compoundSectorOffset(sid, sectorSize);
+    if (offset < 0 || offset + sectorSize > bytes.length) continue;
+    for (let pos = offset; pos < offset + sectorSize; pos += 4) fat.push(view.getInt32(pos, true));
+  }
+  const dirBytes = readCompoundSectorChain(bytes, view, fat, firstDirSector, sectorSize);
+  const entries = [];
+  for (let offset = 0; offset + 128 <= dirBytes.length; offset += 128) {
+    const entry = dirBytes.slice(offset, offset + 128);
+    const nameLength = new DataView(entry.buffer, entry.byteOffset, entry.byteLength).getUint16(64, true);
+    if (!nameLength) continue;
+    const name = new TextDecoder("utf-16le").decode(entry.slice(0, Math.max(0, nameLength - 2))).replace(/\0/g, "");
+    const type = entry[66];
+    const entryView = new DataView(entry.buffer, entry.byteOffset, entry.byteLength);
+    entries.push({
+      name,
+      type,
+      start: entryView.getInt32(116, true),
+      size: entryView.getUint32(120, true),
+    });
+  }
+  const workbook = entries.find((entry) => /^(workbook|book)$/i.test(entry.name));
+  if (!workbook) return null;
+  if (workbook.size < miniCutoff) return null;
+  return readCompoundSectorChain(bytes, view, fat, workbook.start, sectorSize).slice(0, workbook.size);
+}
+
+function compoundSectorOffset(sectorId, sectorSize) {
+  return (sectorId + 1) * sectorSize;
+}
+
+function readCompoundSectorChain(bytes, view, fat, firstSector, sectorSize) {
+  const chunks = [];
+  const seen = new Set();
+  let sector = firstSector;
+  while (sector >= 0 && sector < fat.length && !seen.has(sector)) {
+    seen.add(sector);
+    const offset = compoundSectorOffset(sector, sectorSize);
+    if (offset < 0 || offset + sectorSize > bytes.length) break;
+    chunks.push(bytes.slice(offset, offset + sectorSize));
+    sector = fat[sector];
+  }
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const output = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return output;
+}
+
+function biffRecords(bytes) {
+  const records = [];
+  for (let offset = 0; offset + 4 <= bytes.length;) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset + offset, bytes.byteLength - offset);
+    const type = view.getUint16(0, true);
+    const length = view.getUint16(2, true);
+    offset += 4;
+    if (offset + length > bytes.length) break;
+    records.push({ type, data: new DataView(bytes.buffer, bytes.byteOffset + offset, length) });
+    offset += length;
+  }
+  return records;
+}
+
+function parseBiffSharedStrings(records) {
+  const result = [];
+  const sstIndex = records.findIndex((record) => record.type === 0x00fc);
+  if (sstIndex < 0) return result;
+  const parts = [records[sstIndex].data];
+  for (let index = sstIndex + 1; index < records.length && records[index].type === 0x003c; index++) parts.push(records[index].data);
+  const reader = biffContinuationReader(parts, 8);
+  const uniqueCount = records[sstIndex].data.byteLength >= 8 ? records[sstIndex].data.getUint32(4, true) : 0;
+  for (let i = 0; i < uniqueCount && !reader.done(); i++) {
+    const parsed = readBiffString(reader);
+    result.push(parsed);
+  }
+  return result;
+}
+
+function biffContinuationReader(parts, startOffset = 0) {
+  let part = 0;
+  let offset = startOffset;
+  function current() {
+    return parts[part];
+  }
+  function nextPart() {
+    part += 1;
+    offset = 0;
+    return part < parts.length;
+  }
+  return {
+    done() {
+      return part >= parts.length;
+    },
+    readByte() {
+      while (!this.done() && offset >= current().byteLength) nextPart();
+      if (this.done()) return 0;
+      return current().getUint8(offset++);
+    },
+    readUInt16() {
+      const lo = this.readByte();
+      const hi = this.readByte();
+      return lo | (hi << 8);
+    },
+    readUInt32() {
+      return this.readByte() | (this.readByte() << 8) | (this.readByte() << 16) | (this.readByte() << 24);
+    },
+    continueForString() {
+      if (!this.done() && offset >= current().byteLength && nextPart()) return this.readByte();
+      return null;
+    },
+  };
+}
+
+function readBiffString(reader) {
+  const length = reader.readUInt16();
+  let flags = reader.readByte();
+  let wide = Boolean(flags & 0x01);
+  const richRuns = flags & 0x08 ? reader.readUInt16() : 0;
+  const extSize = flags & 0x04 ? reader.readUInt32() : 0;
+  const chars = [];
+  for (let i = 0; i < length; i++) {
+    const continuationFlags = reader.continueForString();
+    if (continuationFlags !== null) {
+      flags = continuationFlags;
+      wide = Boolean(flags & 0x01);
+    }
+    if (wide) chars.push(reader.readUInt16());
+    else chars.push(reader.readByte());
+  }
+  for (let i = 0; i < richRuns * 4; i++) reader.readByte();
+  for (let i = 0; i < extSize; i++) reader.readByte();
+  return String.fromCharCode(...chars);
+}
+
+function parseBiffInlineString(data, offset) {
+  const length = data.getUint16(offset, true);
+  const flags = data.getUint8(offset + 2);
+  const wide = Boolean(flags & 0x01);
+  let position = offset + 3;
+  const chars = [];
+  for (let i = 0; i < length && position < data.byteLength; i++) {
+    if (wide) {
+      if (position + 2 > data.byteLength) break;
+      chars.push(data.getUint16(position, true));
+      position += 2;
+    } else {
+      chars.push(data.getUint8(position));
+      position += 1;
+    }
+  }
+  return String.fromCharCode(...chars);
+}
+
+function decodeBiffRk(value) {
+  const multiplied = value & 0x01;
+  const isInteger = value & 0x02;
+  let result;
+  if (isInteger) {
+    result = value >> 2;
+  } else {
+    const buffer = new ArrayBuffer(8);
+    const view = new DataView(buffer);
+    view.setUint32(0, 0, true);
+    view.setUint32(4, value & 0xfffffffc, true);
+    result = view.getFloat64(0, true);
+  }
+  return multiplied ? result / 100 : result;
+}
+
+function tableFromCellMap(cells) {
+  const rows = [];
+  for (const key of cells.keys()) {
+    const [row, col] = key.split(":").map(Number);
+    if (!rows[row]) rows[row] = [];
+    rows[row][col] = cells.get(key);
+  }
+  const meaningfulRows = rows.filter((row) => row && row.some((cell) => cell !== undefined && String(cell).trim() !== ""));
+  const headerIndex = meaningfulRows.findIndex((row) => looksLikeTransactionHeader(row));
+  if (headerIndex < 0) return { headers: [], rows: [] };
+  const headers = meaningfulRows[headerIndex].map((header, index) => String(header || `stolpec ${index + 1}`).trim());
+  const dataRows = meaningfulRows.slice(headerIndex + 1).filter((row) => row.some((cell) => cell !== undefined && String(cell).trim() !== ""));
+  return { headers, rows: dataRows.map((row) => Object.fromEntries(headers.map((header, index) => [header, row[index] ?? ""]))) };
+}
+
+function looksLikeTransactionHeader(row) {
+  const text = normalizeText((row || []).map((cell) => String(cell || "")).join(" "));
+  const signals = ["datum", "knjizenja", "knjiženja", "znesek", "breme", "dobro", "namen", "opis", "prejemnik", "placnik", "plačnik", "valuta"];
+  return signals.filter((signal) => text.includes(normalizeText(signal))).length >= 3;
+}
+
 function detectRevolutMapping(headers) {
   const find = (...needles) => headers.find((header) => {
     const normalized = normalizeText(header);
     return needles.some((needle) => normalized.includes(needle));
   }) || "";
   return {
-    date: find("completed", "started", "date", "datum"),
-    description: find("description", "opis"),
+    date: find("completed", "started", "date", "datum", "knjizenja", "knjiženja", "valute"),
+    description: find("description", "opis", "namen", "opis placila", "opis plačila"),
     amount: find("amount", "znesek"),
+    debit: find("debit", "breme", "odliv", "v breme"),
+    credit: find("credit", "dobro", "priliv", "v dobro"),
     currency: find("currency", "valuta"),
     balance: find("balance", "stanje"),
-    type: find("type", "tip"),
-    reference: find("merchant", "reference", "counterparty"),
+    type: find("type", "tip", "vrsta"),
+    reference: find("merchant", "reference", "counterparty", "prejemnik", "placnik", "plačnik", "naziv"),
   };
 }
 
 function rebuildImportDraft() {
   if (!importDraft) return;
   importDraft.transactions = importDraft.rows.map((row, index) => {
-    const description = readMapped(row, "description") || readMapped(row, "reference") || "Revolut transakcija";
-    const amount = parseAmount(readMapped(row, "amount"));
+    const descriptionParts = [readMapped(row, "description"), readMapped(row, "reference")]
+      .map((part) => String(part || "").trim())
+      .filter(Boolean);
+    const description = [...new Set(descriptionParts)].join(" · ") || "Bančna transakcija";
+    const rawAmount = readMapped(row, "amount");
+    const debit = parseAmount(readMapped(row, "debit"));
+    const credit = parseAmount(readMapped(row, "credit"));
+    const amount = rawAmount !== "" && rawAmount !== null && rawAmount !== undefined
+      ? parseAmount(rawAmount)
+      : credit - Math.abs(debit);
     const type = readMapped(row, "type");
     const learned = importDraft.transactions?.[index];
     const classification = learned?.manualChanged
@@ -3604,7 +3888,7 @@ function rebuildImportDraft() {
       date: normalizeDate(readMapped(row, "date")),
       description,
       amount,
-      currency: readMapped(row, "currency") || "EUR",
+      currency: String(readMapped(row, "currency") || "EUR").trim(),
       balance: parseAmount(readMapped(row, "balance")),
       kind: type || (amount < 0 ? "strošek" : "prihodek"),
       reference: readMapped(row, "reference"),
@@ -3646,6 +3930,7 @@ function normalizeText(value) {
 }
 
 function parseAmount(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
   const cleaned = String(value || "").replace(/\s/g, "").replace("€", "").replace(/\.(?=\d{3}(\D|$))/g, "").replace(",", ".");
   const number = Number(cleaned);
   return Number.isFinite(number) ? number : 0;
@@ -3653,13 +3938,22 @@ function parseAmount(value) {
 
 function normalizeDate(value) {
   if (!value) return "";
+  if (typeof value === "number" && Number.isFinite(value)) return excelSerialDate(value);
   const raw = String(value).trim();
+  if (/^\d{5}(\.\d+)?$/.test(raw)) return excelSerialDate(Number(raw));
   const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
   const slMatch = raw.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})/);
   if (slMatch) return `${slMatch[3]}-${pad(slMatch[2])}-${pad(slMatch[1])}`;
   const date = new Date(raw);
   return Number.isNaN(date.getTime()) ? "" : date.toISOString().slice(0, 10);
+}
+
+function excelSerialDate(value) {
+  const serial = Number(value);
+  if (!Number.isFinite(serial) || serial < 1) return "";
+  const utc = Date.UTC(1899, 11, 30) + Math.round(serial * 86400000);
+  return new Date(utc).toISOString().slice(0, 10);
 }
 
 function categorizeTransaction(description, type, amount) {
@@ -3780,8 +4074,50 @@ function isInternalTransfer(tx) {
   return tx.category === "interni transfer" || tx.category === "gotovina" || isTransferLikeText(text);
 }
 
+function isWithSaveTransfer(tx) {
+  return normalizeText(`${tx.description} ${tx.reference} ${tx.kind}`).includes("withsave");
+}
+
+function importedSavingsTransfer(tx, sourceLabel, importId) {
+  if (!isWithSaveTransfer(tx) || Number(tx.amount || 0) >= 0) return null;
+  const fromAccount = findExpenseAccount(tx.account) || (state.accounts || []).find((account) => canonicalAssetKey(account) === "banka");
+  const toAccount = roundUpSavingsAccount();
+  const amount = Math.abs(Number(tx.amount || 0));
+  if (!fromAccount || !toAccount || fromAccount.id === toAccount.id || amount <= 0) return null;
+  const transfer = {
+    id: crypto.randomUUID(),
+    date: tx.date,
+    description: tx.description || `withSAVE: ${fromAccount.name} → ${toAccount.name}`,
+    amount,
+    currency: tx.currency || "EUR",
+    category: "interni transfer",
+    subcategory: "withSAVE",
+    account: `${fromAccount.name} → ${toAccount.name}`,
+    type: "interni transfer",
+    status: "interni transfer",
+    source: sourceLabel,
+    confidence: "high",
+    importId,
+    fileName: importDraft.fileName,
+    originalDescription: tx.description,
+    note: "Samodejni prenos z bančnega računa na varčevalni račun.",
+    fromAccountId: fromAccount.id,
+    toAccountId: toAccount.id,
+    balanceImpact: amount,
+    transferManaged: true,
+    linkedIncomeId: "",
+    linkedExpenseId: "",
+  };
+  state.accounts = (state.accounts || []).map((account) => {
+    if (account.id === fromAccount.id) return { ...account, balance: Number(account.balance || 0) - amount };
+    if (account.id === toAccount.id) return { ...account, balance: Number(account.balance || 0) + amount };
+    return account;
+  });
+  return transfer;
+}
+
 function isTransferLikeText(text) {
-  return /(top-up|top up|own account|lastni racun|lastni račun|to self|from self|between accounts|savings vault|bank transfer|sepa|nakazilo|transfer|prenos)/.test(normalizeText(text));
+  return /(top-up|top up|own account|lastni racun|lastni račun|to self|from self|between accounts|savings vault|withsave|bank transfer|sepa|nakazilo|transfer|prenos)/.test(normalizeText(text));
 }
 
 function amountCents(value) {
@@ -3799,11 +4135,21 @@ function accountLooksLikeRevolut(account) {
   return canonicalAssetKey(account) === "revolut" || normalizeText(account?.name || account || "").includes("revolut");
 }
 
+function accountMatchesReference(account, reference) {
+  const normalized = normalizeText(reference);
+  if (!account || !normalized) return false;
+  const accountKey = canonicalAssetKey(account);
+  return normalizeText(account.name) === normalized
+    || normalizeText(account.type) === normalized
+    || accountKeyFromReference(reference) === accountKey
+    || normalized.includes(normalizeText(account.name));
+}
+
 function transferAccountDirectionMatches(tx, transfer) {
   const fromAccount = (state.accounts || []).find((account) => account.id === transfer.fromAccountId);
   const toAccount = (state.accounts || []).find((account) => account.id === transfer.toAccountId);
-  if (Number(tx.amount || 0) > 0) return accountLooksLikeRevolut(toAccount) || accountLooksLikeRevolut(tx.account);
-  if (Number(tx.amount || 0) < 0) return accountLooksLikeRevolut(fromAccount) || accountLooksLikeRevolut(tx.account);
+  if (Number(tx.amount || 0) > 0) return accountMatchesReference(toAccount, tx.account) || accountLooksLikeRevolut(toAccount) || accountLooksLikeRevolut(tx.account);
+  if (Number(tx.amount || 0) < 0) return accountMatchesReference(fromAccount, tx.account) || accountLooksLikeRevolut(fromAccount) || accountLooksLikeRevolut(tx.account);
   return false;
 }
 
@@ -3848,7 +4194,7 @@ function isDuplicateTransaction(tx) {
     currency: item.currency || "EUR",
     account: item.account || "Revolut",
   }) === targetKey)) return true;
-  const importedItems = [...state.incomes, ...state.expenses].filter((item) => item.importSource === "Revolut CSV");
+  const importedItems = [...state.incomes, ...state.expenses].filter((item) => item.importSource);
   return importedItems.some((item) => transactionKey({
     date: item.date,
     amount: item.originalAmount ?? item.amount,
@@ -3861,6 +4207,7 @@ function isDuplicateTransaction(tx) {
 function confirmImportDraft() {
   if (!importDraft) return;
   rebuildImportDraft();
+  const sourceLabel = importDraft.sourceLabel || "Uvoz transakcij";
   const importId = crypto.randomUUID();
   const transactionRows = [];
   const incomeRows = [];
@@ -3871,6 +4218,14 @@ function confirmImportDraft() {
     if (tx.status === "možen dvojnik") {
       skippedDuplicates++;
       continue;
+    }
+    if (tx.status === "interni transfer" && isWithSaveTransfer(tx)) {
+      const savingsTransfer = importedSavingsTransfer(tx, sourceLabel, importId);
+      if (savingsTransfer) {
+        transactionRows.push(savingsTransfer);
+        skippedTransfers++;
+        continue;
+      }
     }
     const transactionRow = {
       id: crypto.randomUUID(),
@@ -3883,7 +4238,7 @@ function confirmImportDraft() {
       account: tx.account,
       type: tx.status === "interni transfer" ? "interni transfer" : tx.status === "za pregled" ? "za pregled" : tx.amount < 0 ? "strošek" : "prihodek",
       status: tx.status,
-      source: "Revolut CSV",
+      source: sourceLabel,
       confidence: tx.confidence,
       importId,
       fileName: importDraft.fileName,
@@ -3905,12 +4260,12 @@ function confirmImportDraft() {
         subcategory: tx.subcategory || tx.reference || "",
         account: tx.account,
         kind: "variabilen",
-        note: `Uvoženo iz Revolut CSV (${importDraft.fileName})`,
+        note: `Uvoženo iz ${sourceLabel} (${importDraft.fileName})`,
         currency: tx.currency,
         originalAmount: tx.amount,
         originalDescription: tx.description,
         importId,
-        importSource: "Revolut CSV",
+        importSource: sourceLabel,
         importConfidence: tx.confidence,
       });
       transactionRow.linkedExpenseId = expenseRows[expenseRows.length - 1].id;
@@ -3922,13 +4277,13 @@ function confirmImportDraft() {
         amount: tx.amount,
         category: tx.category === "drugo" ? "drugo" : tx.category,
         source: tx.account,
-        note: `Uvoženo iz Revolut CSV (${importDraft.fileName})`,
+        note: `Uvoženo iz ${sourceLabel} (${importDraft.fileName})`,
         currency: tx.currency,
         account: tx.account,
         originalAmount: tx.amount,
         originalDescription: tx.description,
         importId,
-        importSource: "Revolut CSV",
+        importSource: sourceLabel,
         importConfidence: tx.confidence,
       });
       transactionRow.linkedIncomeId = incomeRows[incomeRows.length - 1].id;
@@ -4003,6 +4358,9 @@ function undoLastImport() {
   const incomeIds = new Set(last.incomeIds || []);
   const expenseIds = new Set(last.expenseIds || []);
   const transactionIds = new Set(last.transactionIds || []);
+  (state.transactions || [])
+    .filter((item) => transactionIds.has(item.id) && item.transferManaged)
+    .forEach((item) => restoreTransferBalance(item));
   state.transactions = (state.transactions || []).filter((item) => !transactionIds.has(item.id));
   state.incomes = state.incomes.filter((item) => !incomeIds.has(item.id));
   expenseIds.forEach((id) => deleteExpenseRecord(id));
