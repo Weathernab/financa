@@ -1,4 +1,4 @@
-const EUR = new Intl.NumberFormat("sl-SI", { style: "currency", currency: "EUR" });
+﻿const EUR = new Intl.NumberFormat("sl-SI", { style: "currency", currency: "EUR" });
 const NUMBER = new Intl.NumberFormat("sl-SI", { maximumFractionDigits: 1 });
 const STORAGE_KEY = "osebni-financni-dashboard-v1";
 const PROFILE_REGISTRY_KEY = "financa-profili-v1";
@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "61";
+const APP_VERSION = "65";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -1458,12 +1458,22 @@ function markStateSyncedWithCloud(remoteUpdatedAt) {
 async function remoteFreshness() {
   const result = await cloudRequest("health");
   const remoteTime = timestampValue(result.updatedAt);
-  const localTime = timestampValue(currentSyncedRemoteUpdatedAt());
+  const syncedRemoteTime = timestampValue(currentSyncedRemoteUpdatedAt());
+  const localUpdatedTime = timestampValue(state.meta?.updatedAt);
+  const syncedLocalTime = timestampValue(state.meta?.cloudSync?.localUpdatedAt);
+  const pendingSinceTime = timestampValue(localStorage.getItem(cloudPendingStorageKey()));
+  const hasLocalChangesSinceSync = Boolean(
+    pendingSinceTime || (localUpdatedTime && syncedLocalTime && localUpdatedTime > syncedLocalTime + 1000)
+  );
+  const remoteAdvancedSinceSync = Boolean(remoteTime && (!syncedRemoteTime || remoteTime > syncedRemoteTime + 1000));
+  const remoteChangedAfterLocalEdit = Boolean(remoteAdvancedSinceSync && localUpdatedTime && remoteTime > localUpdatedTime + 1000);
   return {
     updatedAt: result.updatedAt || "",
     schemaVersion: remoteStateSchema(null, result),
     appVersion: result.appVersion || "",
-    isNewer: Boolean(remoteTime && (!localTime || remoteTime > localTime + 1000)),
+    remoteAdvancedSinceSync,
+    hasLocalChangesSinceSync,
+    isNewer: Boolean(remoteAdvancedSinceSync && (!hasLocalChangesSinceSync || remoteChangedAfterLocalEdit)),
   };
 }
 
@@ -3214,34 +3224,45 @@ function spendingRecommendationsHtml() {
 function importsView() {
   const history = state.importHistory || [];
   const rules = state.categoryRules || [];
+  const preview = importDraft
+    ? `<div class="card import-preview-card full-span">
+        <div class="card-header"><h3>Predogled pred uvozom</h3>${importDraftActions()}</div>
+        <div class="card-body">
+          ${importPreviewFilters()}
+          <div class="table-wrap">${importPreviewTable()}</div>
+        </div>
+      </div>`
+    : "";
   return `<section class="grid two-col">
     <div class="card">
-      <div class="card-header"><h3>Uvoz transakcij</h3><span class="pill">Vir: Revolut · CSV</span></div>
+      <div class="card-header"><h3>Uvoz transakcij</h3><span class="pill">Banka / Revolut</span></div>
       <div class="card-body">
         <div class="import-drop">
-          <label>Naloži CSV datoteko iz Revoluta
+          <label>Nalozi CSV, XML ali XLS datoteko
             <input type="file" accept=".csv,.xml,.xls,text/csv,text/xml,application/xml" data-action="import-revolut-csv">
           </label>
           <p>Datoteka se obdela lokalno v brskalniku. Podatki se ne pošiljajo zunanjim servisom.</p>
         </div>
-        ${importDraft ? importMappingHtml() : `<div class="empty">Izberi CSV datoteko za predogled transakcij pred uvozom.</div>`}
+        ${importDraft ? importMappingHtml() : `<div class="empty">Izberi CSV, XML ali XLS datoteko za predogled transakcij pred uvozom.</div>`}
       </div>
     </div>
-    <div class="card">
-      <div class="card-header">
-        <h3>Zgodovina uvozov</h3>
-        ${history.length ? `<button class="button secondary" data-action="undo-last-import">Razveljavi zadnji uvoz</button>` : ""}
+    ${preview}
+    <details class="card import-collapsible full-span">
+      <summary class="card-header"><h3>Zgodovina uvozov</h3><span class="pill">${history.length} uvozov</span></summary>
+      <div class="card-body">
+        ${history.length ? `<div class="toolbar compact-toolbar"><button class="button secondary" data-action="undo-last-import">Razveljavi zadnji uvoz</button></div>` : ""}
+        <div class="table-wrap">${importHistoryTable(history)}</div>
       </div>
-      <div class="card-body table-wrap">${importHistoryTable(history)}</div>
-    </div>
-    <div class="card">
-      <div class="card-header"><h3>Naučena pravila</h3><button class="button secondary" data-add="categoryRules">Dodaj pravilo</button></div>
-      <div class="card-body table-wrap">${categoryRulesTable(rules)}</div>
-    </div>
-  </section>
-  ${importDraft ? `<section class="card" style="margin-top:14px"><div class="card-header"><h3>Predogled pred uvozom</h3>${importDraftActions()}</div><div class="card-body">${importPreviewFilters()}<div class="table-wrap">${importPreviewTable()}</div></div></section>` : ""}`;
+    </details>
+    <details class="card import-collapsible full-span">
+      <summary class="card-header"><h3>Naučena pravila</h3><span class="pill">${rules.length} pravil</span></summary>
+      <div class="card-body">
+        <div class="toolbar compact-toolbar"><button class="button secondary" data-add="categoryRules">Dodaj pravilo</button></div>
+        <div class="table-wrap">${categoryRulesTable(rules)}</div>
+      </div>
+    </details>
+  </section>`;
 }
-
 function setupView() {
   const data = monthlyData();
   return `<form class="setup-mode" data-setup-form>
@@ -3914,7 +3935,13 @@ function rebuildImportDraft() {
       tx.subcategory = "ujemajoč prenos";
       tx.confidence = "high";
       tx.ruleSource = "ujemanje z nasprotno transakcijo";
-    } else if (isInternalTransfer(tx)) tx.status = "interni transfer";
+    } else if (isInternalTransfer(tx)) {
+      tx.status = "interni transfer";
+      tx.category = "interni transfer";
+      tx.subcategory = tx.subcategory && tx.subcategory !== "streaming" ? tx.subcategory : "med računi";
+      tx.confidence = "high";
+      tx.ruleSource = "prepoznan interni prenos";
+    }
     if ((tx.confidence === "low" || tx.category === "za pregled" || tx.subcategory === "za pregled") && tx.status === "pripravljeno") tx.status = "za pregled";
     if (isDuplicateTransaction(tx)) tx.status = "možen dvojnik";
     return tx;
@@ -3963,7 +3990,8 @@ function categorizeTransaction(description, type, amount) {
     return { category: userRule.category, subcategory: userRule.subcategory || "", confidence: "high", source: `naučeno: ${userRule.keyword}` };
   }
   const transferRule = matchRule(text, [
-    rule("interni transfer", "med računi", "low", "revolut transfer", "top up", "bank transfer", "transfer", "nakazilo", "sepa", "to own account", "from own account", "savings", "varčevalni račun"),
+    rule("interni transfer", "banka -> Revolut", "high", "apple pay top-up", "apple pay topup", "revolut top-up", "revolut topup", "card top-up", "card topup"),
+    rule("interni transfer", "med računi", "low", "revolut transfer", "top-up", "top up", "topup", "bank transfer", "transfer", "nakazilo", "sepa", "to own account", "from own account", "savings", "varčevalni račun"),
     rule("gotovina", "dvig gotovine", "high", "atm", "bankomat", "cash withdrawal", "dvig gotovine", "withdrawal"),
   ]);
   if (transferRule) return transferRule;
@@ -4118,9 +4146,11 @@ function importedSavingsTransfer(tx, sourceLabel, importId) {
 
 function isBankToRevolutTransfer(tx) {
   const text = normalizeText(`${tx.description} ${tx.reference} ${tx.kind}`);
-  return Number(tx.amount || 0) < 0
-    && text.includes("revolut")
-    && /(sepa|nakazilo|transfer|prenos|placilni nalog|top up|bank transfer)/.test(text);
+  const accountText = normalizeText(tx.account || "");
+  const revolutSide = text.includes("revolut") || accountText.includes("revolut");
+  const topUp = /(apple pay top-?up|revolut top-?up|card top-?up|top-?up|topup)/.test(text);
+  const bankTransfer = /(sepa|nakazilo|transfer|prenos|placilni nalog|bank transfer)/.test(text);
+  return revolutSide && (topUp || bankTransfer);
 }
 
 function importedRevolutTransfer(tx, sourceLabel, importId) {
@@ -4162,7 +4192,7 @@ function importedRevolutTransfer(tx, sourceLabel, importId) {
 }
 
 function isTransferLikeText(text) {
-  return /(top-up|top up|own account|lastni racun|lastni račun|to self|from self|between accounts|savings vault|withsave|bank transfer|sepa|nakazilo|transfer|prenos)/.test(normalizeText(text));
+  return /(apple pay top-?up|revolut top-?up|card top-?up|top-up|top up|topup|own account|lastni racun|lastni račun|to self|from self|between accounts|savings vault|withsave|bank transfer|sepa|nakazilo|transfer|prenos)/.test(normalizeText(text));
 }
 
 function amountCents(value) {

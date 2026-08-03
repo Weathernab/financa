@@ -614,6 +614,10 @@ button {
   grid-template-columns: minmax(0, 1.08fr) minmax(340px, 0.92fr);
 }
 
+.full-span {
+  grid-column: 1 / -1;
+}
+
 .three-col {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -1491,6 +1495,56 @@ textarea {
   display: grid;
   grid-template-columns: repeat(4, minmax(150px, 1fr));
   gap: 12px;
+}
+
+.inline-import-preview {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.card-header.compact {
+  padding: 0 0 12px;
+  border-bottom: 0;
+}
+
+.import-preview-card {
+  overflow: visible;
+}
+
+.import-collapsible {
+  overflow: hidden;
+}
+
+.import-collapsible summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.import-collapsible summary::-webkit-details-marker {
+  display: none;
+}
+
+.import-collapsible summary::after {
+  content: "+";
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 900;
+}
+
+.import-collapsible[open] summary::after {
+  content: "-";
+}
+
+.compact-toolbar {
+  justify-content: flex-end;
+  margin-bottom: 12px;
 }
 
 .import-table select {
