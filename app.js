@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "60";
+const APP_VERSION = "61";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -4071,7 +4071,7 @@ function findUserCategoryRule(text, amount) {
 
 function isInternalTransfer(tx) {
   const text = normalizeText(`${tx.description} ${tx.reference}`);
-  return tx.category === "interni transfer" || tx.category === "gotovina" || isTransferLikeText(text);
+  return tx.category === "interni transfer" || tx.category === "gotovina" || isBankToRevolutTransfer(tx) || isTransferLikeText(text);
 }
 
 function isWithSaveTransfer(tx) {
@@ -4101,6 +4101,51 @@ function importedSavingsTransfer(tx, sourceLabel, importId) {
     fileName: importDraft.fileName,
     originalDescription: tx.description,
     note: "Samodejni prenos z bančnega računa na varčevalni račun.",
+    fromAccountId: fromAccount.id,
+    toAccountId: toAccount.id,
+    balanceImpact: amount,
+    transferManaged: true,
+    linkedIncomeId: "",
+    linkedExpenseId: "",
+  };
+  state.accounts = (state.accounts || []).map((account) => {
+    if (account.id === fromAccount.id) return { ...account, balance: Number(account.balance || 0) - amount };
+    if (account.id === toAccount.id) return { ...account, balance: Number(account.balance || 0) + amount };
+    return account;
+  });
+  return transfer;
+}
+
+function isBankToRevolutTransfer(tx) {
+  const text = normalizeText(`${tx.description} ${tx.reference} ${tx.kind}`);
+  return Number(tx.amount || 0) < 0
+    && text.includes("revolut")
+    && /(sepa|nakazilo|transfer|prenos|placilni nalog|top up|bank transfer)/.test(text);
+}
+
+function importedRevolutTransfer(tx, sourceLabel, importId) {
+  if (!isBankToRevolutTransfer(tx)) return null;
+  const fromAccount = findExpenseAccount(tx.account) || (state.accounts || []).find((account) => canonicalAssetKey(account) === "banka");
+  const toAccount = (state.accounts || []).find((account) => canonicalAssetKey(account) === "revolut");
+  const amount = Math.abs(Number(tx.amount || 0));
+  if (!fromAccount || !toAccount || fromAccount.id === toAccount.id || amount <= 0) return null;
+  const transfer = {
+    id: crypto.randomUUID(),
+    date: tx.date,
+    description: tx.description || `Prenos na Revolut: ${fromAccount.name} -> ${toAccount.name}`,
+    amount,
+    currency: tx.currency || "EUR",
+    category: "interni transfer",
+    subcategory: "banka -> Revolut",
+    account: `${fromAccount.name} -> ${toAccount.name}`,
+    type: "interni transfer",
+    status: "interni transfer",
+    source: sourceLabel,
+    confidence: "high",
+    importId,
+    fileName: importDraft.fileName,
+    originalDescription: tx.description,
+    note: "Samodejno prepoznan prenos z bancnega racuna na Revolut.",
     fromAccountId: fromAccount.id,
     toAccountId: toAccount.id,
     balanceImpact: amount,
@@ -4223,6 +4268,14 @@ function confirmImportDraft() {
       const savingsTransfer = importedSavingsTransfer(tx, sourceLabel, importId);
       if (savingsTransfer) {
         transactionRows.push(savingsTransfer);
+        skippedTransfers++;
+        continue;
+      }
+    }
+    if (tx.status === "interni transfer" && isBankToRevolutTransfer(tx)) {
+      const revolutTransfer = importedRevolutTransfer(tx, sourceLabel, importId);
+      if (revolutTransfer) {
+        transactionRows.push(revolutTransfer);
         skippedTransfers++;
         continue;
       }
