@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "74";
+const APP_VERSION = "75";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -2015,6 +2015,30 @@ function restoreIncomeBalance(income) {
       ? { ...account, balance: Number(account.balance || 0) - impact }
       : account
   );
+}
+
+function repairMissingIncomeBalances() {
+  const affected = (state.incomes || []).filter(
+    (income) => Math.abs(Number(income.amount || 0)) > 0 && !income.balanceAccountId
+  );
+  if (!affected.length) return { fixed: 0, totalAmount: 0, unmatched: 0 };
+  createBackup("pred popravilom manjkajočih stanj prihodkov", state);
+  let fixed = 0;
+  let totalAmount = 0;
+  let unmatched = 0;
+  for (const income of affected) {
+    const updated = applyIncomeBalance(income);
+    if (!updated.balanceAccountId) {
+      unmatched += 1;
+      continue;
+    }
+    replaceRecordById("incomes", income.id, updated);
+    fixed += 1;
+    totalAmount += Number(updated.balanceImpact || 0);
+  }
+  save();
+  render();
+  return { fixed, totalAmount, unmatched };
 }
 
 function applyIncomeBalance(income) {
@@ -4619,7 +4643,7 @@ function confirmImportDraft() {
   }
   rememberSelectedRules(importDraft.transactions);
   state.transactions = [...transactionRows, ...(state.transactions || [])];
-  state.incomes = [...incomeRows, ...state.incomes];
+  incomeRows.slice().reverse().forEach((row) => upsertIncome(row));
   expenseRows.slice().reverse().forEach((row) => upsertExpense(row));
   state.importHistory = [{
     id: importId,
@@ -4951,6 +4975,7 @@ function legacySettingsView() {
         <button class="button secondary" data-action="export-csv">Izvozi CSV</button>
         ${localBackupButton}
         <label class="button secondary">Uvozi JSON<input type="file" accept="application/json" data-action="import-json" hidden></label>
+        ${currentProfile.role === "admin" ? `<button class="button secondary" data-action="repair-income-balances">Popravi manjkajoča stanja prihodkov</button>` : ""}
         <button class="button danger" data-action="clear">Izbriši vse podatke</button>
       </div>
     </div></div>
@@ -5906,6 +5931,15 @@ function bind() {
     render();
   }));
   document.querySelectorAll("[data-action='apply-category-migration']").forEach((btn) => btn.addEventListener("click", applyCategoryMigration));
+  document.querySelectorAll("[data-action='repair-income-balances']").forEach((btn) => btn.addEventListener("click", () => {
+    if (!confirm("Popravim stanja računov za prihodke, ki niso bili upoštevani (npr. napačno uvoženi iz bančnega izpiska)? Pred popravilom bo ustvarjena varnostna kopija.")) return;
+    const result = repairMissingIncomeBalances();
+    if (result.fixed === 0 && result.unmatched === 0) {
+      alert("Ni bilo najdenih prihodkov z manjkajočim stanjem računa.");
+      return;
+    }
+    alert(`Popravljenih prihodkov: ${result.fixed} (skupaj ${result.totalAmount.toFixed(2)} €).${result.unmatched ? ` Opozorilo: pri ${result.unmatched} prihodkih računa ni bilo mogoče samodejno prepoznati, preveri jih ročno.` : ""}`);
+  }));
   document.querySelectorAll("[data-restore-backup]").forEach((btn) => btn.addEventListener("click", () => restoreBackup(btn.dataset.restoreBackup)));
   document.querySelectorAll("[data-delete-backup]").forEach((btn) => btn.addEventListener("click", () => {
     if (confirm("Izbrišem to lokalno varnostno kopijo?")) deleteBackup(btn.dataset.deleteBackup);
