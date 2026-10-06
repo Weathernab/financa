@@ -61,14 +61,14 @@ module.exports = async function handler(req, res) {
         headers: { "Content-Type": "text/plain;charset=utf-8" },
         body: JSON.stringify(request),
         redirect: "follow",
-        signal: AbortSignal.timeout(15000),
+        signal: AbortSignal.timeout(45000),
       });
     } else {
       target.searchParams.set("action", request.action || "health");
       target.searchParams.set("key", request.key || "");
       target.searchParams.set("profileId", request.profileId || "");
       target.searchParams.set("credentialHash", request.credentialHash || "");
-      remote = await fetch(target, { redirect: "follow", signal: AbortSignal.timeout(15000) });
+      remote = await fetch(target, { redirect: "follow", signal: AbortSignal.timeout(45000) });
     }
 
     const text = await remote.text();

@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "70";
+const APP_VERSION = "74";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -1216,7 +1216,7 @@ async function sendCloudRequest(request) {
   try {
     response = await Promise.race([
       operation,
-      new Promise((_, reject) => setTimeout(() => reject(new Error("Google Sheets se ni odzval v 15 sekundah.")), 15000)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Google Sheets se ni odzval v 45 sekundah.")), 45000)),
     ]);
   } catch (error) {
     const message = String(error?.message || error || "Povezava z Google Sheets ni uspela.")
@@ -1585,12 +1585,15 @@ function monthlyData(month = filters.month, year = filters.year) {
   const incomes = state.incomes.filter((item) => sameMonth(item, "date", month, year));
   const expenses = state.expenses.filter((item) => sameMonth(item, "date", month, year));
   const investments = state.investments.filter((item) => sameMonth(item, "date", month, year));
-  const breakdown = netWorthBreakdown();
-  const openLiabilities = breakdown.liabilityTotal;
-  const assets = breakdown.assetTotal;
-  const netWorth = assets - openLiabilities;
   const selectedSnapshot = snapshotForMonth(month, year);
   const isCurrent = Number(month) === currentMonth && Number(year) === currentYear;
+  const breakdown = netWorthBreakdown();
+  const snapshotAssets = Number(selectedSnapshot?.assets || 0);
+  const snapshotLiabilities = Number(selectedSnapshot?.liabilities || 0);
+  const snapshotNetWorth = selectedSnapshot ? Number(selectedSnapshot.netWorth || snapshotAssets - snapshotLiabilities) : null;
+  const openLiabilities = !isCurrent && selectedSnapshot ? snapshotLiabilities : breakdown.liabilityTotal;
+  const assets = !isCurrent && selectedSnapshot ? snapshotAssets : breakdown.assetTotal;
+  const netWorth = !isCurrent && selectedSnapshot ? snapshotNetWorth : assets - openLiabilities;
   const comparisonValue = isCurrent ? netWorth : selectedSnapshot ? Number(selectedSnapshot.netWorth || 0) : null;
   const previous = comparisonValue !== null ? latestSnapshotBefore(month, year) : null;
   const incomeTotal = sum(incomes);
@@ -1613,6 +1616,8 @@ function monthlyData(month = filters.month, year = filters.year) {
     countedInvestments: breakdown.investments,
     countedLiabilities: breakdown.liabilities,
     netWorth,
+    netWorthSource: !isCurrent && selectedSnapshot ? "snapshot" : "trenutno stanje",
+    netWorthSnapshot: selectedSnapshot,
     netWorthChange: previous ? comparisonValue - Number(previous.netWorth || 0) : null,
   };
 }
@@ -2803,6 +2808,31 @@ function investmentAccounts() {
   );
 }
 
+function netWorthSourceHtml(data) {
+  const sourceLabel = data.netWorthSource === "snapshot"
+    ? `Snapshot za ${monthLabel(filters.month, filters.year)}`
+    : "Trenutno stanje računov";
+  const detail = data.netWorthSource === "snapshot"
+    ? "Za izbran pretekli mesec aplikacija uporabi shranjen mesečni snapshot. Današnje spremembe računov tega meseca ne prepisujejo več."
+    : "Za trenutni mesec aplikacija sešteje trenutna sredstva in odšteje odprte obveznosti.";
+  return `<section class="card" style="margin-top:14px">
+    <div class="card-header"><div><h3>Vir net worth izračuna</h3><p>${escapeHtml(detail)}</p></div><span class="pill">${escapeHtml(sourceLabel)}</span></div>
+    <div class="card-body nw-breakdown">
+      <div><span>Sredstva v izračunu</span><strong class="positive">${money(data.assets)}</strong></div>
+      <div><span>Obveznosti v izračunu</span><strong class="negative">${money(data.liabilities)}</strong></div>
+      <div><span>Net worth</span><strong>${money(data.netWorth)}</strong></div>
+    </div>
+  </section>`;
+}
+
+function flatNetWorthWarning(rows) {
+  const recent = rows.slice(-3).filter((item) => Number.isFinite(Number(item.netWorth)));
+  if (recent.length < 3) return "";
+  const values = recent.map((item) => Math.round(Number(item.netWorth || 0) * 100));
+  if (new Set(values).size !== 1) return "";
+  return `<div class="notice warning" style="margin-bottom:12px">Zadnji trije snapshoti imajo enak net worth (${money(recent[0].netWorth)}). To običajno pomeni, da so bili pretekli meseci zaključeni z istim trenutnim stanjem računov. Popravi vrednosti v tabeli "Mesečni snapshoti", če poznaš dejanska stanja za te mesece.</div>`;
+}
+
 function netWorthView() {
   const data = monthlyData();
   const snapshotRows = netWorthHistory();
@@ -2812,13 +2842,14 @@ function netWorthView() {
     ${metricCard(["Obveznosti", data.liabilities, `${data.countedLiabilities.length} odprtih postavk`, "warning"])}
     ${metricCard(["Net worth", data.netWorth, "sredstva minus obveznosti", data.netWorth >= 0 ? "positive" : "negative"])}
   </section>
+  ${netWorthSourceHtml(data)}
   <section class="grid three-col" style="margin-top:14px">
     <div class="card"><div class="card-header"><h3>Premoženje</h3><strong class="positive">${money(data.accountAssets)}</strong></div><div class="card-body">${netWorthItems(data.countedAccounts, "balance")}</div></div>
     <div class="card"><div class="card-header"><h3>Investicije</h3><strong class="positive">${money(data.investmentAssets)}</strong></div><div class="card-body">${netWorthItems(data.countedInvestments, "currentValue")}</div></div>
     <div class="card"><div class="card-header"><h3>Obveznosti</h3><strong class="negative">${money(data.liabilities)}</strong></div><div class="card-body">${netWorthItems(data.countedLiabilities, "amount")}</div></div>
   </section>
   <section class="grid two-col" style="margin-top:14px">
-    <div class="card"><div class="card-header"><h3>Gibanje net worth</h3></div><div class="card-body">${trendChart(snapshotRows.map((s) => [monthLabel(s.month, s.year), s.netWorth]))}</div></div>
+    <div class="card"><div class="card-header"><h3>Gibanje net worth</h3></div><div class="card-body">${flatNetWorthWarning(snapshotRows)}${trendChart(snapshotRows.map((s) => [monthLabel(s.month, s.year), s.netWorth]))}</div></div>
     <div class="card"><div class="card-header"><h3>Mesečni snapshoti</h3></div><div class="card-body table-wrap">${table("snapshots", state.snapshots, [["Mesec", (r) => `${r.month}/${r.year}`], ["Sredstva", (r) => money(r.assets)], ["Obveznosti", (r) => money(r.liabilities)], ["Net worth", (r) => money(r.netWorth)], ["Opomba", (r) => r.note || ""]])}</div></div>
   </section>`;
 }
