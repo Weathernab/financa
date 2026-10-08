@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "81";
+const APP_VERSION = "82";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -2469,7 +2469,13 @@ function numericField(key) {
   return ["amount", "balance", "quantity", "averagePrice", "currentValue", "addedThisMonth", "targetAmount", "currentAmount", "monthlyAmount", "targetShare", "day", "recurringDay", "month", "year", "assets", "liabilities", "netWorth"].includes(key);
 }
 
+let portaledRowMenu = null;
+
 function render() {
+  if (portaledRowMenu) {
+    portaledRowMenu.remove();
+    portaledRowMenu = null;
+  }
   const previousSidebar = document.querySelector(".sidebar");
   if (previousSidebar) mobileNavScrollLeft = previousSidebar.scrollLeft;
   if (!currentProfile) {
@@ -2541,6 +2547,22 @@ function render() {
       updateNavEdge();
     });
     currentSidebar.addEventListener("scroll", updateNavEdge, { passive: true });
+  }
+  if (rowMenuOpen) {
+    const trigger = document.querySelector(`[data-row-menu="${rowMenuOpen}"]`);
+    const menu = document.querySelector(".row-menu");
+    if (trigger && menu) {
+      const rect = trigger.getBoundingClientRect();
+      document.body.appendChild(menu);
+      portaledRowMenu = menu;
+      menu.style.position = "fixed";
+      menu.style.margin = "0";
+      const menuHeight = menu.getBoundingClientRect().height;
+      const openUpward = window.innerHeight - rect.bottom < menuHeight + 12 && rect.top > menuHeight + 12;
+      menu.style.top = openUpward ? `${Math.max(8, rect.top - menuHeight - 6)}px` : `${rect.bottom + 6}px`;
+      menu.style.left = "auto";
+      menu.style.right = `${Math.max(8, window.innerWidth - rect.right)}px`;
+    }
   }
 }
 
