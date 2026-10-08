@@ -2002,8 +2002,33 @@ button:disabled {
   100% { transform: translateY(-110vh) scale(1.15) rotate(18deg); opacity: 0; }
 }
 
+.heart-pop-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 9999;
+}
+
+.heart-pop-layer span {
+  position: fixed;
+  transform: translate(-50%, -50%) scale(0.4);
+  opacity: 0;
+  animation: heart-pop 0.9s ease-out forwards;
+  filter: drop-shadow(0 2px 5px rgba(219, 39, 119, 0.35));
+}
+
+@keyframes heart-pop {
+  0% { transform: translate(-50%, -50%) scale(0.4); opacity: 0; }
+  25% { opacity: 1; transform: translate(-50%, -50%) scale(1.05); }
+  100% { transform: translate(calc(-50% + var(--drift, 0px)), calc(-50% - 60px)) scale(0.75); opacity: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .heart-burst { display: none; }
+  .heart-burst,
+  .heart-pop-layer {
+    display: none;
+  }
 }
 
 .budget-values {
