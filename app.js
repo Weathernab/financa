@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "81";
+const APP_VERSION = "83";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -2369,11 +2369,11 @@ function upsertTransaction(clean) {
   const tx = {
     ...(existing || {}),
     ...clean,
-    amount: Number(clean.amount || 0),
+    amount: Number(clean.amount ?? existing?.amount ?? 0),
     confidence: clean.category && clean.category !== "za pregled" ? "manual" : existing?.confidence || "low",
     source: existing?.source || "ročno",
   };
-  Object.assign(tx, withCategoryGroup(tx));
+  Object.assign(tx, withCategoryGroup(tx, { force: true }));
   tx.status = tx.category === "za pregled" || tx.type === "za pregled" ? "za pregled" : tx.type === "interni transfer" ? "interni transfer" : "pripravljeno";
   if (!existing && !tx.id) tx.id = crypto.randomUUID();
   if (existing) {
@@ -2469,7 +2469,13 @@ function numericField(key) {
   return ["amount", "balance", "quantity", "averagePrice", "currentValue", "addedThisMonth", "targetAmount", "currentAmount", "monthlyAmount", "targetShare", "day", "recurringDay", "month", "year", "assets", "liabilities", "netWorth"].includes(key);
 }
 
+let portaledRowMenu = null;
+
 function render() {
+  if (portaledRowMenu) {
+    portaledRowMenu.remove();
+    portaledRowMenu = null;
+  }
   const previousSidebar = document.querySelector(".sidebar");
   if (previousSidebar) mobileNavScrollLeft = previousSidebar.scrollLeft;
   if (!currentProfile) {
@@ -2541,6 +2547,22 @@ function render() {
       updateNavEdge();
     });
     currentSidebar.addEventListener("scroll", updateNavEdge, { passive: true });
+  }
+  if (rowMenuOpen) {
+    const trigger = document.querySelector(`[data-row-menu="${rowMenuOpen}"]`);
+    const menu = document.querySelector(".row-menu");
+    if (trigger && menu) {
+      const rect = trigger.getBoundingClientRect();
+      document.body.appendChild(menu);
+      portaledRowMenu = menu;
+      menu.style.position = "fixed";
+      menu.style.margin = "0";
+      const menuHeight = menu.getBoundingClientRect().height;
+      const openUpward = window.innerHeight - rect.bottom < menuHeight + 12 && rect.top > menuHeight + 12;
+      menu.style.top = openUpward ? `${Math.max(8, rect.top - menuHeight - 6)}px` : `${rect.bottom + 6}px`;
+      menu.style.left = "auto";
+      menu.style.right = `${Math.max(8, window.innerWidth - rect.right)}px`;
+    }
   }
 }
 
@@ -2833,7 +2855,9 @@ function modernTransactionsTable(rows) {
       <td><strong class="${Number(tx.amount) < 0 ? "negative" : "positive"}">${money(Number(tx.amount || 0))}</strong></td>
       <td>${escapeHtml(tx.date || "")}</td>
       <td>${escapeHtml(tx.categoryGroup || categoryGroupFor(tx.category))}</td>
-      <td><span class="pill">${escapeHtml(tx.category || "za pregled")}</span>${tx.subcategory ? `<br><small class="muted">${escapeHtml(tx.subcategory)}</small>` : ""}</td>
+      <td>${tx.status === "za pregled"
+        ? `<select data-review-category="${escapeAttr(tx.id)}">${importCategories.map((c) => option(c, tx.category)).join("")}</select>`
+        : `<span class="pill">${escapeHtml(tx.category || "za pregled")}</span>${tx.subcategory ? `<br><small class="muted">${escapeHtml(tx.subcategory)}</small>` : ""}`}</td>
       <td>${escapeHtml(tx.account || "")}</td>
       <td>${escapeHtml(tx.status || "")}</td>
       <td>${rowActionMenu("transactions", tx.id, { allowRule: !tx.transferManaged, allowDuplicate: true, allowRecurring: !tx.transferManaged })}</td>
@@ -5896,6 +5920,14 @@ function bind() {
   document.querySelectorAll("[data-remember-rule]").forEach((checkbox) => checkbox.addEventListener("change", () => {
     const tx = importDraft.transactions[Number(checkbox.dataset.rememberRule)];
     tx.rememberRule = checkbox.checked;
+    render();
+  }));
+  document.querySelectorAll("[data-review-category]").forEach((select) => select.addEventListener("change", () => {
+    const id = select.dataset.reviewCategory;
+    const existing = (state.transactions || []).find((item) => item.id === id);
+    const type = existing && Number(existing.amount) < 0 ? "strošek" : "prihodek";
+    upsertTransaction({ id, category: select.value, type });
+    save();
     render();
   }));
   document.querySelectorAll("[data-import-filter]").forEach((btn) => btn.addEventListener("click", () => {
