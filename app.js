@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "76";
+const APP_VERSION = "77";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -2131,7 +2131,13 @@ function focusFiltersOnExpense(expense) {
   filters.account = "";
 }
 
-function upsertExpense(clean, syncTransaction = false) {
+function warnIfBalanceNotApplied(entry) {
+  if (entry.account && !entry.balanceAccountId) {
+    alert(`Opozorilo: vnos "${entry.name || entry.account}" ni bil pripisan nobenemu računu, ker račun "${entry.account}" ne obstaja. Stanje računa se ni spremenilo - preveri izbiro računa.`);
+  }
+}
+
+function upsertExpense(clean, syncTransaction = false, options = {}) {
   const existing = (state.expenses || []).find((item) => item.id === clean.id);
   if (existing) restoreExpenseBalance(existing);
   let row = {
@@ -2162,10 +2168,11 @@ function upsertExpense(clean, syncTransaction = false) {
   }
   if (row.category) state.settings.lastExpenseCategory = row.category;
   if (row.account) state.settings.lastExpenseAccount = row.account;
+  if (!options.silent) warnIfBalanceNotApplied(row);
   return row;
 }
 
-function upsertIncome(clean, syncTransaction = false) {
+function upsertIncome(clean, syncTransaction = false, options = {}) {
   const existing = (state.incomes || []).find((item) => item.id === clean.id);
   if (existing) restoreIncomeBalance(existing);
   let row = {
@@ -2187,6 +2194,7 @@ function upsertIncome(clean, syncTransaction = false) {
   }
   if (row.category) state.settings.lastIncomeCategory = row.category;
   if (row.account) state.settings.lastIncomeAccount = row.account;
+  if (!options.silent) warnIfBalanceNotApplied(row);
   return row;
 }
 
@@ -4643,8 +4651,15 @@ function confirmImportDraft() {
   }
   rememberSelectedRules(importDraft.transactions);
   state.transactions = [...transactionRows, ...(state.transactions || [])];
-  incomeRows.slice().reverse().forEach((row) => upsertIncome(row));
-  expenseRows.slice().reverse().forEach((row) => upsertExpense(row));
+  let unmatchedAccountCount = 0;
+  incomeRows.slice().reverse().forEach((row) => {
+    const saved = upsertIncome(row, false, { silent: true });
+    if (saved.account && !saved.balanceAccountId) unmatchedAccountCount += 1;
+  });
+  expenseRows.slice().reverse().forEach((row) => {
+    const saved = upsertExpense(row, false, { silent: true });
+    if (saved.account && !saved.balanceAccountId) unmatchedAccountCount += 1;
+  });
   state.importHistory = [{
     id: importId,
     importedAt: new Date().toISOString(),
@@ -4660,6 +4675,9 @@ function confirmImportDraft() {
   importDraft = null;
   save();
   render();
+  if (unmatchedAccountCount > 0) {
+    alert(`Opozorilo: ${unmatchedAccountCount} uvoženih vnosov ni bilo mogoče pripisati nobenemu računu (izbrani račun ne obstaja). Stanja teh računov se niso spremenila - preveri jih v seznamu transakcij.`);
+  }
 }
 
 function rememberSelectedRules(transactions) {
