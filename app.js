@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "83";
+const APP_VERSION = "84";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -2856,7 +2856,7 @@ function modernTransactionsTable(rows) {
       <td>${escapeHtml(tx.date || "")}</td>
       <td>${escapeHtml(tx.categoryGroup || categoryGroupFor(tx.category))}</td>
       <td>${tx.status === "za pregled"
-        ? `<select data-review-category="${escapeAttr(tx.id)}">${importCategories.map((c) => option(c, tx.category)).join("")}</select>`
+        ? `<span class="pill confidence-${tx.confidence || "low"}">${confidenceLevels[tx.confidence] || "Nejasno"}</span><br><select data-review-category="${escapeAttr(tx.id)}">${importCategories.map((c) => option(c, tx.category)).join("")}</select>`
         : `<span class="pill">${escapeHtml(tx.category || "za pregled")}</span>${tx.subcategory ? `<br><small class="muted">${escapeHtml(tx.subcategory)}</small>` : ""}`}</td>
       <td>${escapeHtml(tx.account || "")}</td>
       <td>${escapeHtml(tx.status || "")}</td>
