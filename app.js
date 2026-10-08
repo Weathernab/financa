@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "79";
+const APP_VERSION = "80";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -2673,12 +2673,18 @@ function upcomingHtml() {
   return `<div class="notice">${items.map((item) => `<div class="notice-item"><strong>${item.name}</strong><br><span>${money(item.amount)} do ${item.dueDate}</span><br><span class="pill">${item.category}</span></div>`).join("")}</div>`;
 }
 
+function monthOptionsHtml(selectedMonth) {
+  return Array.from({ length: 12 }, (_, i) => i + 1)
+    .map((m) => `<option value="${m}" ${Number(selectedMonth) === m ? "selected" : ""}>${escapeHtml(new Date(2000, m - 1, 1).toLocaleDateString("sl-SI", { month: "long" }))}</option>`)
+    .join("");
+}
+
 function filterHtml(collection) {
   const extra = collection === "incomes"
     ? `<label>Kategorija<select data-filter="category"><option value="">Vse</option>${incomeCategories.map((c) => option(c, filters.category)).join("")}</select></label><label>Vir<input data-filter="source" value="${escapeAttr(filters.source)}"></label>`
     : `<label>Kategorija<select data-filter="category"><option value="">Vse</option>${expenseCategories.map((c) => option(c, filters.category)).join("")}</select></label><label>Račun<input data-filter="account" value="${escapeAttr(filters.account)}"></label>`;
   return `<div class="card"><div class="card-body filters">
-    <label>Mesec<input type="number" min="1" max="12" data-filter="month" value="${filters.month}"></label>
+    <label>Mesec<select data-filter="month">${monthOptionsHtml(filters.month)}</select></label>
     <label>Leto<input type="number" data-filter="year" value="${filters.year}"></label>
     ${extra}
   </div></div>`;
@@ -5715,7 +5721,8 @@ function bind() {
     removeItem(collection, id);
   }));
   document.querySelectorAll("[data-filter]").forEach((input) => input.addEventListener("input", () => {
-    filters[input.dataset.filter] = input.type === "number" ? Number(input.value) : input.value;
+    const numericFilters = ["month", "year"];
+    filters[input.dataset.filter] = numericFilters.includes(input.dataset.filter) ? Number(input.value) : input.value;
     render();
   }));
   document.querySelectorAll("[data-setting]").forEach((input) => input.addEventListener("input", () => {
