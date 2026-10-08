@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "77";
+const APP_VERSION = "78";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -344,6 +344,7 @@ const profileSystem = await initializeProfileSystem();
 let profiles = profileSystem.profiles;
 let currentProfile = profileSystem.currentProfile;
 let state = currentProfile ? loadState() : emptyState({ setupCompleted: false });
+if (currentProfile) applyThemeAttribute();
 let backendConfig = loadBackendConfig();
 let active = currentProfile ? (state.settings.setupCompleted ? "dashboard" : "setup") : "login";
 let modal = null;
@@ -643,7 +644,9 @@ async function loginWithKey(key) {
     authMessage = "";
     cloudReady = false;
     loginPending = false;
+    applyThemeAttribute();
     render();
+    if (isLizaProfile()) triggerHeartBurst();
     initializeGoogleSheetsSync();
   } catch (error) {
     authMessage = String(error?.message || "Ključ ni pravilen.")
@@ -667,6 +670,7 @@ function logout() {
   active = "login";
   cloudReady = false;
   cloudStatus = { state: "local", message: "Podatki so shranjeni lokalno." };
+  applyThemeAttribute();
   render();
 }
 
@@ -984,6 +988,34 @@ function deleteBackup(backupId) {
   render();
 }
 
+function isLizaProfile(profile = currentProfile) {
+  return normalizeText(profile?.name) === "liza";
+}
+
+function applyThemeAttribute() {
+  const theme = isLizaProfile() ? "liza" : (state.settings.theme || "dark");
+  document.documentElement.dataset.theme = theme;
+  const themeMeta = document.querySelector('meta[name="theme-color"]');
+  if (themeMeta) themeMeta.content = theme === "liza" ? "#ff4f93" : theme === "light" ? "#eef3f8" : "#07101c";
+}
+
+function triggerHeartBurst() {
+  const layer = document.createElement("div");
+  layer.className = "heart-burst";
+  const hearts = ["💗", "💖", "💕", "💓", "❤️"];
+  for (let i = 0; i < 18; i += 1) {
+    const span = document.createElement("span");
+    span.textContent = hearts[i % hearts.length];
+    span.style.left = `${Math.random() * 100}%`;
+    span.style.animationDelay = `${Math.random() * 0.8}s`;
+    span.style.animationDuration = `${2.6 + Math.random() * 1.8}s`;
+    span.style.fontSize = `${18 + Math.random() * 22}px`;
+    layer.appendChild(span);
+  }
+  document.body.appendChild(layer);
+  setTimeout(() => layer.remove(), 5000);
+}
+
 function save({ touch = true } = {}) {
   if (!currentProfile) return;
   state.meta = {
@@ -1001,9 +1033,7 @@ function save({ touch = true } = {}) {
     };
   }
   localStorage.setItem(profileStorageKey(), JSON.stringify(state));
-  document.documentElement.dataset.theme = state.settings.theme || "dark";
-  const themeMeta = document.querySelector('meta[name="theme-color"]');
-  if (themeMeta) themeMeta.content = state.settings.theme === "light" ? "#eef3f8" : "#07101c";
+  applyThemeAttribute();
   if (touch) {
     markCloudSavePending();
     queueCloudSave();
