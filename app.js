@@ -1,4 +1,4 @@
-﻿const EUR = new Intl.NumberFormat("sl-SI", { style: "currency", currency: "EUR" });
+const EUR = new Intl.NumberFormat("sl-SI", { style: "currency", currency: "EUR" });
 const NUMBER = new Intl.NumberFormat("sl-SI", { maximumFractionDigits: 1 });
 const STORAGE_KEY = "osebni-financni-dashboard-v1";
 const PROFILE_REGISTRY_KEY = "financa-profili-v1";
@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "70";
+const APP_VERSION = "78";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -344,6 +344,7 @@ const profileSystem = await initializeProfileSystem();
 let profiles = profileSystem.profiles;
 let currentProfile = profileSystem.currentProfile;
 let state = currentProfile ? loadState() : emptyState({ setupCompleted: false });
+if (currentProfile) applyThemeAttribute();
 let backendConfig = loadBackendConfig();
 let active = currentProfile ? (state.settings.setupCompleted ? "dashboard" : "setup") : "login";
 let modal = null;
@@ -643,7 +644,9 @@ async function loginWithKey(key) {
     authMessage = "";
     cloudReady = false;
     loginPending = false;
+    applyThemeAttribute();
     render();
+    if (isLizaProfile()) triggerHeartBurst();
     initializeGoogleSheetsSync();
   } catch (error) {
     authMessage = String(error?.message || "Ključ ni pravilen.")
@@ -667,6 +670,7 @@ function logout() {
   active = "login";
   cloudReady = false;
   cloudStatus = { state: "local", message: "Podatki so shranjeni lokalno." };
+  applyThemeAttribute();
   render();
 }
 
@@ -984,6 +988,34 @@ function deleteBackup(backupId) {
   render();
 }
 
+function isLizaProfile(profile = currentProfile) {
+  return normalizeText(profile?.name) === "liza";
+}
+
+function applyThemeAttribute() {
+  const theme = isLizaProfile() ? "liza" : (state.settings.theme || "dark");
+  document.documentElement.dataset.theme = theme;
+  const themeMeta = document.querySelector('meta[name="theme-color"]');
+  if (themeMeta) themeMeta.content = theme === "liza" ? "#ff4f93" : theme === "light" ? "#eef3f8" : "#07101c";
+}
+
+function triggerHeartBurst() {
+  const layer = document.createElement("div");
+  layer.className = "heart-burst";
+  const hearts = ["💗", "💖", "💕", "💓", "❤️"];
+  for (let i = 0; i < 18; i += 1) {
+    const span = document.createElement("span");
+    span.textContent = hearts[i % hearts.length];
+    span.style.left = `${Math.random() * 100}%`;
+    span.style.animationDelay = `${Math.random() * 0.8}s`;
+    span.style.animationDuration = `${2.6 + Math.random() * 1.8}s`;
+    span.style.fontSize = `${18 + Math.random() * 22}px`;
+    layer.appendChild(span);
+  }
+  document.body.appendChild(layer);
+  setTimeout(() => layer.remove(), 5000);
+}
+
 function save({ touch = true } = {}) {
   if (!currentProfile) return;
   state.meta = {
@@ -1001,9 +1033,7 @@ function save({ touch = true } = {}) {
     };
   }
   localStorage.setItem(profileStorageKey(), JSON.stringify(state));
-  document.documentElement.dataset.theme = state.settings.theme || "dark";
-  const themeMeta = document.querySelector('meta[name="theme-color"]');
-  if (themeMeta) themeMeta.content = state.settings.theme === "light" ? "#eef3f8" : "#07101c";
+  applyThemeAttribute();
   if (touch) {
     markCloudSavePending();
     queueCloudSave();
@@ -1216,7 +1246,7 @@ async function sendCloudRequest(request) {
   try {
     response = await Promise.race([
       operation,
-      new Promise((_, reject) => setTimeout(() => reject(new Error("Google Sheets se ni odzval v 15 sekundah.")), 15000)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Google Sheets se ni odzval v 45 sekundah.")), 45000)),
     ]);
   } catch (error) {
     const message = String(error?.message || error || "Povezava z Google Sheets ni uspela.")
@@ -1585,12 +1615,15 @@ function monthlyData(month = filters.month, year = filters.year) {
   const incomes = state.incomes.filter((item) => sameMonth(item, "date", month, year));
   const expenses = state.expenses.filter((item) => sameMonth(item, "date", month, year));
   const investments = state.investments.filter((item) => sameMonth(item, "date", month, year));
-  const breakdown = netWorthBreakdown();
-  const openLiabilities = breakdown.liabilityTotal;
-  const assets = breakdown.assetTotal;
-  const netWorth = assets - openLiabilities;
   const selectedSnapshot = snapshotForMonth(month, year);
   const isCurrent = Number(month) === currentMonth && Number(year) === currentYear;
+  const breakdown = netWorthBreakdown();
+  const snapshotAssets = Number(selectedSnapshot?.assets || 0);
+  const snapshotLiabilities = Number(selectedSnapshot?.liabilities || 0);
+  const snapshotNetWorth = selectedSnapshot ? Number(selectedSnapshot.netWorth || snapshotAssets - snapshotLiabilities) : null;
+  const openLiabilities = !isCurrent && selectedSnapshot ? snapshotLiabilities : breakdown.liabilityTotal;
+  const assets = !isCurrent && selectedSnapshot ? snapshotAssets : breakdown.assetTotal;
+  const netWorth = !isCurrent && selectedSnapshot ? snapshotNetWorth : assets - openLiabilities;
   const comparisonValue = isCurrent ? netWorth : selectedSnapshot ? Number(selectedSnapshot.netWorth || 0) : null;
   const previous = comparisonValue !== null ? latestSnapshotBefore(month, year) : null;
   const incomeTotal = sum(incomes);
@@ -1613,6 +1646,8 @@ function monthlyData(month = filters.month, year = filters.year) {
     countedInvestments: breakdown.investments,
     countedLiabilities: breakdown.liabilities,
     netWorth,
+    netWorthSource: !isCurrent && selectedSnapshot ? "snapshot" : "trenutno stanje",
+    netWorthSnapshot: selectedSnapshot,
     netWorthChange: previous ? comparisonValue - Number(previous.netWorth || 0) : null,
   };
 }
@@ -2012,6 +2047,30 @@ function restoreIncomeBalance(income) {
   );
 }
 
+function repairMissingIncomeBalances() {
+  const affected = (state.incomes || []).filter(
+    (income) => Math.abs(Number(income.amount || 0)) > 0 && !income.balanceAccountId
+  );
+  if (!affected.length) return { fixed: 0, totalAmount: 0, unmatched: 0 };
+  createBackup("pred popravilom manjkajočih stanj prihodkov", state);
+  let fixed = 0;
+  let totalAmount = 0;
+  let unmatched = 0;
+  for (const income of affected) {
+    const updated = applyIncomeBalance(income);
+    if (!updated.balanceAccountId) {
+      unmatched += 1;
+      continue;
+    }
+    replaceRecordById("incomes", income.id, updated);
+    fixed += 1;
+    totalAmount += Number(updated.balanceImpact || 0);
+  }
+  save();
+  render();
+  return { fixed, totalAmount, unmatched };
+}
+
 function applyIncomeBalance(income) {
   const account = findExpenseAccount(income.account);
   const impact = Math.abs(Number(income.amount || 0));
@@ -2102,7 +2161,13 @@ function focusFiltersOnExpense(expense) {
   filters.account = "";
 }
 
-function upsertExpense(clean, syncTransaction = false) {
+function warnIfBalanceNotApplied(entry) {
+  if (entry.account && !entry.balanceAccountId) {
+    alert(`Opozorilo: vnos "${entry.name || entry.account}" ni bil pripisan nobenemu računu, ker račun "${entry.account}" ne obstaja. Stanje računa se ni spremenilo - preveri izbiro računa.`);
+  }
+}
+
+function upsertExpense(clean, syncTransaction = false, options = {}) {
   const existing = (state.expenses || []).find((item) => item.id === clean.id);
   if (existing) restoreExpenseBalance(existing);
   let row = {
@@ -2133,10 +2198,11 @@ function upsertExpense(clean, syncTransaction = false) {
   }
   if (row.category) state.settings.lastExpenseCategory = row.category;
   if (row.account) state.settings.lastExpenseAccount = row.account;
+  if (!options.silent) warnIfBalanceNotApplied(row);
   return row;
 }
 
-function upsertIncome(clean, syncTransaction = false) {
+function upsertIncome(clean, syncTransaction = false, options = {}) {
   const existing = (state.incomes || []).find((item) => item.id === clean.id);
   if (existing) restoreIncomeBalance(existing);
   let row = {
@@ -2158,6 +2224,7 @@ function upsertIncome(clean, syncTransaction = false) {
   }
   if (row.category) state.settings.lastIncomeCategory = row.category;
   if (row.account) state.settings.lastIncomeAccount = row.account;
+  if (!options.silent) warnIfBalanceNotApplied(row);
   return row;
 }
 
@@ -2803,6 +2870,31 @@ function investmentAccounts() {
   );
 }
 
+function netWorthSourceHtml(data) {
+  const sourceLabel = data.netWorthSource === "snapshot"
+    ? `Snapshot za ${monthLabel(filters.month, filters.year)}`
+    : "Trenutno stanje računov";
+  const detail = data.netWorthSource === "snapshot"
+    ? "Za izbran pretekli mesec aplikacija uporabi shranjen mesečni snapshot. Današnje spremembe računov tega meseca ne prepisujejo več."
+    : "Za trenutni mesec aplikacija sešteje trenutna sredstva in odšteje odprte obveznosti.";
+  return `<section class="card" style="margin-top:14px">
+    <div class="card-header"><div><h3>Vir net worth izračuna</h3><p>${escapeHtml(detail)}</p></div><span class="pill">${escapeHtml(sourceLabel)}</span></div>
+    <div class="card-body nw-breakdown">
+      <div><span>Sredstva v izračunu</span><strong class="positive">${money(data.assets)}</strong></div>
+      <div><span>Obveznosti v izračunu</span><strong class="negative">${money(data.liabilities)}</strong></div>
+      <div><span>Net worth</span><strong>${money(data.netWorth)}</strong></div>
+    </div>
+  </section>`;
+}
+
+function flatNetWorthWarning(rows) {
+  const recent = rows.slice(-3).filter((item) => Number.isFinite(Number(item.netWorth)));
+  if (recent.length < 3) return "";
+  const values = recent.map((item) => Math.round(Number(item.netWorth || 0) * 100));
+  if (new Set(values).size !== 1) return "";
+  return `<div class="notice warning" style="margin-bottom:12px">Zadnji trije snapshoti imajo enak net worth (${money(recent[0].netWorth)}). To običajno pomeni, da so bili pretekli meseci zaključeni z istim trenutnim stanjem računov. Popravi vrednosti v tabeli "Mesečni snapshoti", če poznaš dejanska stanja za te mesece.</div>`;
+}
+
 function netWorthView() {
   const data = monthlyData();
   const snapshotRows = netWorthHistory();
@@ -2812,13 +2904,14 @@ function netWorthView() {
     ${metricCard(["Obveznosti", data.liabilities, `${data.countedLiabilities.length} odprtih postavk`, "warning"])}
     ${metricCard(["Net worth", data.netWorth, "sredstva minus obveznosti", data.netWorth >= 0 ? "positive" : "negative"])}
   </section>
+  ${netWorthSourceHtml(data)}
   <section class="grid three-col" style="margin-top:14px">
     <div class="card"><div class="card-header"><h3>Premoženje</h3><strong class="positive">${money(data.accountAssets)}</strong></div><div class="card-body">${netWorthItems(data.countedAccounts, "balance")}</div></div>
     <div class="card"><div class="card-header"><h3>Investicije</h3><strong class="positive">${money(data.investmentAssets)}</strong></div><div class="card-body">${netWorthItems(data.countedInvestments, "currentValue")}</div></div>
     <div class="card"><div class="card-header"><h3>Obveznosti</h3><strong class="negative">${money(data.liabilities)}</strong></div><div class="card-body">${netWorthItems(data.countedLiabilities, "amount")}</div></div>
   </section>
   <section class="grid two-col" style="margin-top:14px">
-    <div class="card"><div class="card-header"><h3>Gibanje net worth</h3></div><div class="card-body">${trendChart(snapshotRows.map((s) => [monthLabel(s.month, s.year), s.netWorth]))}</div></div>
+    <div class="card"><div class="card-header"><h3>Gibanje net worth</h3></div><div class="card-body">${flatNetWorthWarning(snapshotRows)}${trendChart(snapshotRows.map((s) => [monthLabel(s.month, s.year), s.netWorth]))}</div></div>
     <div class="card"><div class="card-header"><h3>Mesečni snapshoti</h3></div><div class="card-body table-wrap">${table("snapshots", state.snapshots, [["Mesec", (r) => `${r.month}/${r.year}`], ["Sredstva", (r) => money(r.assets)], ["Obveznosti", (r) => money(r.liabilities)], ["Net worth", (r) => money(r.netWorth)], ["Opomba", (r) => r.note || ""]])}</div></div>
   </section>`;
 }
@@ -4588,8 +4681,15 @@ function confirmImportDraft() {
   }
   rememberSelectedRules(importDraft.transactions);
   state.transactions = [...transactionRows, ...(state.transactions || [])];
-  state.incomes = [...incomeRows, ...state.incomes];
-  expenseRows.slice().reverse().forEach((row) => upsertExpense(row));
+  let unmatchedAccountCount = 0;
+  incomeRows.slice().reverse().forEach((row) => {
+    const saved = upsertIncome(row, false, { silent: true });
+    if (saved.account && !saved.balanceAccountId) unmatchedAccountCount += 1;
+  });
+  expenseRows.slice().reverse().forEach((row) => {
+    const saved = upsertExpense(row, false, { silent: true });
+    if (saved.account && !saved.balanceAccountId) unmatchedAccountCount += 1;
+  });
   state.importHistory = [{
     id: importId,
     importedAt: new Date().toISOString(),
@@ -4605,6 +4705,9 @@ function confirmImportDraft() {
   importDraft = null;
   save();
   render();
+  if (unmatchedAccountCount > 0) {
+    alert(`Opozorilo: ${unmatchedAccountCount} uvoženih vnosov ni bilo mogoče pripisati nobenemu računu (izbrani račun ne obstaja). Stanja teh računov se niso spremenila - preveri jih v seznamu transakcij.`);
+  }
 }
 
 function rememberSelectedRules(transactions) {
@@ -4719,6 +4822,7 @@ function settingsDataView() {
       ${localBackupButton}
       <label class="button secondary">Uvozi JSON<input type="file" accept="application/json" data-action="import-json" hidden></label>
       <button class="button secondary" data-nav="setup">Odpri začetni setup</button>
+      ${currentProfile.role === "admin" ? `<button class="button secondary" data-action="repair-income-balances">Popravi manjkajoča stanja prihodkov</button>` : ""}
       <button class="button danger ghost" data-action="clear">Izbriši vse podatke</button>
     </div>
   </div></div>
@@ -4850,115 +4954,6 @@ function settingsSyncView() {
   </div>`;
 }
 
-function legacySettingsView() {
-  const sheets = googleSheetsConfig();
-  const serverManagedAuth = hasServerManagedCloudAuth();
-  const localBackupButton = currentProfile.role === "admin" && location.protocol.startsWith("http")
-    ? `<button class="button secondary" data-action="local-backup">Shrani kopijo za namizno aplikacijo</button>`
-    : "";
-  return `<div class="settings-panel">
-    ${pwaInstallView()}
-    <div class="card profile-settings">
-      <div class="card-header">
-        <div><h3>Moj profil</h3><p>Prijavljen kot ${escapeHtml(currentProfile.name)}.</p></div>
-        <span class="pill">${currentProfile.role === "admin" ? "Skrbnik" : "Uporabnik"}</span>
-      </div>
-      <div class="card-body">
-        <form class="form-grid" data-change-profile-key>
-          <label>Trenutni ključ<input type="password" name="currentKey" autocomplete="current-password" required></label>
-          <label>Novi ključ<input type="password" name="newKey" autocomplete="new-password" minlength="4" required></label>
-          <label>Ponovi novi ključ<input type="password" name="confirmKey" autocomplete="new-password" minlength="4" required></label>
-          <div class="profile-form-action"><button class="button" type="submit">Spremeni ključ</button></div>
-        </form>
-      </div>
-    </div>
-    ${currentProfile.role === "admin" ? adminProfilesView() : ""}
-    ${currentProfile.role === "admin" ? roundUpSavingsSettingsView() : ""}
-    <div class="card"><div class="card-header"><h3>Osnovne nastavitve</h3></div><div class="card-body form-grid">
-      <label>Začetni mesec<input type="month" data-setting="startMonth" value="${state.settings.startMonth}"></label>
-      <label>Privzeta valuta<select data-setting="currency"><option value="EUR" selected>EUR</option></select></label>
-      <label>Način<select data-setting="theme">${option("light", state.settings.theme)}${option("dark", state.settings.theme)}</select></label>
-      <div class="full"><button class="button secondary" data-nav="setup">Odpri začetni setup</button></div>
-    </div></div>
-    ${currentProfile.role === "admin" ? `<div class="card cloud-settings">
-      <div class="card-header">
-        <div><h3>Google Sheets backend</h3><p>Sinhronizacija med napravami z lokalno varnostno kopijo.</p></div>
-        <span class="sync-badge ${cloudStatus.state}">${
-          cloudStatus.state === "success" ? "Povezano"
-            : cloudStatus.state === "pending" ? "Povezujem"
-              : sheets.enabled ? "Potrebno preverjanje" : "Ni povezano"
-        }</span>
-      </div>
-      <div class="card-body">
-        <form class="form-grid" data-google-sheets-form>
-          <label class="full">URL spletne aplikacije
-            <input type="url" name="endpoint" value="${escapeAttr(sheets.endpoint)}" placeholder="https://script.google.com/macros/s/.../exec ali prazno, če je nastavljen Vercel env">
-          </label>
-          <label class="full">Sinhronizacijski ključ
-            <input type="password" name="syncKey" value="${escapeAttr(sheets.syncKey)}" autocomplete="off" placeholder="${serverManagedAuth ? "V PWA ga lahko nastavi Vercel env" : "Enak ključ kot v Apps Script kodi"}" ${serverManagedAuth ? "" : "required"}>
-          </label>
-          <p class="settings-note full">Pri mobilni PWA lahko URL ostane prazen, če je v Vercelu nastavljen GOOGLE_APPS_SCRIPT_URL. Sinhronizacijski ključ lahko ostane prazen, če je v Vercelu nastavljen GOOGLE_APPS_SCRIPT_SYNC_KEY.</p>
-          <div class="full cloud-actions">
-            <button class="button" type="submit">${sheets.enabled ? "Preveri povezavo" : "Poveži Google Sheets"}</button>
-            ${sheets.enabled ? `
-              <button class="button secondary" type="button" data-action="cloud-pull">Prenesi iz Sheets</button>
-              <button class="button secondary" type="button" data-action="cloud-push">Pošlji v Sheets</button>
-              <button class="button danger ghost" type="button" data-action="cloud-disconnect">Odklopi</button>
-            ` : ""}
-          </div>
-        </form>
-        <div class="sync-status ${cloudStatus.state}">
-          <span class="sync-dot"></span>
-          <div><strong>${escapeHtml(cloudStatus.message)}</strong>${sheets.lastSyncAt ? `<small>Zadnja uspešna sinhronizacija: ${formatSyncTime(sheets.lastSyncAt)}</small>` : ""}</div>
-        </div>
-        <p class="settings-note">Finančni podatki se pošiljajo samo v tvoj Apps Script in Google Sheet. URL ter ključ ostaneta shranjena lokalno na tej napravi.</p>
-      </div>
-    </div>` : userCloudSettingsView(sheets)}
-    <div class="card"><div class="card-header"><h3>Podatki</h3></div><div class="card-body">
-      <div class="actions" style="justify-content:flex-start">
-        <button class="button" data-action="export-json">Izvozi JSON</button>
-        <button class="button secondary" data-action="export-csv">Izvozi CSV</button>
-        ${localBackupButton}
-        <label class="button secondary">Uvozi JSON<input type="file" accept="application/json" data-action="import-json" hidden></label>
-        <button class="button danger" data-action="clear">Izbriši vse podatke</button>
-      </div>
-    </div></div>
-  </div>`;
-}
-
-function userCloudSettingsView(sheets) {
-  const usable = canUseCloudEndpoint(sheets);
-  const serverManagedAuth = hasServerManagedCloudAuth();
-  return `<div class="card cloud-settings">
-    <div class="card-header">
-      <div><h3>Google Sheets backend</h3><p>Sinhronizacija podatkov tega profila.</p></div>
-      <span class="sync-badge ${cloudStatus.state}">${
-        cloudStatus.state === "success" ? "Povezano"
-          : cloudStatus.state === "pending" ? "Povezujem"
-            : usable ? "Na voljo" : "Ni povezan"
-      }</span>
-    </div>
-    <div class="card-body">
-      <div class="sync-status ${cloudStatus.state}">
-        <span class="sync-dot"></span>
-        <div><strong>${escapeHtml(cloudStatus.message)}</strong>${sheets.lastSyncAt ? `<small>Zadnja uspešna sinhronizacija: ${formatSyncTime(sheets.lastSyncAt)}</small>` : ""}</div>
-      </div>
-      <form class="form-grid" data-google-sheets-form>
-        <label class="full">URL spletne aplikacije
-          <input type="url" name="endpoint" value="${escapeAttr(sheets.endpoint)}" placeholder="https://script.google.com/macros/s/.../exec">
-        </label>
-        <label class="full">Sinhronizacijski ključ
-          <input type="password" name="syncKey" value="${escapeAttr(sheets.syncKey)}" autocomplete="off" placeholder="${serverManagedAuth ? "Nastavljen v okolju" : "Enak ključ kot v Apps Script kodi"}" ${serverManagedAuth ? "" : "required"}>
-        </label>
-        <div class="full cloud-actions">
-          <button class="button" type="submit">${usable ? "Preveri povezavo" : "Poveži Google Sheets"}</button>
-          ${usable ? `<button class="button secondary" type="button" data-action="cloud-pull">Prenesi iz Sheets</button><button class="button secondary" type="button" data-action="cloud-push">Pošlji v Sheets</button><button class="button danger ghost" type="button" data-action="cloud-disconnect">Odklopi</button>` : ""}
-        </div>
-      </form>
-      <p class="settings-note">Tvoji podatki so ločeni od drugih profilov in se sinhronizirajo pod internim ID-jem profila.</p>
-    </div>
-  </div>`;
-}
 
 function roundUpSavingsSettingsView() {
   const bank = (state.accounts || []).find((account) => canonicalAssetKey(account) === "banka");
@@ -5875,6 +5870,15 @@ function bind() {
     render();
   }));
   document.querySelectorAll("[data-action='apply-category-migration']").forEach((btn) => btn.addEventListener("click", applyCategoryMigration));
+  document.querySelectorAll("[data-action='repair-income-balances']").forEach((btn) => btn.addEventListener("click", () => {
+    if (!confirm("Popravim stanja računov za prihodke, ki niso bili upoštevani (npr. napačno uvoženi iz bančnega izpiska)? Pred popravilom bo ustvarjena varnostna kopija.")) return;
+    const result = repairMissingIncomeBalances();
+    if (result.fixed === 0 && result.unmatched === 0) {
+      alert("Ni bilo najdenih prihodkov z manjkajočim stanjem računa.");
+      return;
+    }
+    alert(`Popravljenih prihodkov: ${result.fixed} (skupaj ${result.totalAmount.toFixed(2)} €).${result.unmatched ? ` Opozorilo: pri ${result.unmatched} prihodkih računa ni bilo mogoče samodejno prepoznati, preveri jih ročno.` : ""}`);
+  }));
   document.querySelectorAll("[data-restore-backup]").forEach((btn) => btn.addEventListener("click", () => restoreBackup(btn.dataset.restoreBackup)));
   document.querySelectorAll("[data-delete-backup]").forEach((btn) => btn.addEventListener("click", () => {
     if (confirm("Izbrišem to lokalno varnostno kopijo?")) deleteBackup(btn.dataset.deleteBackup);

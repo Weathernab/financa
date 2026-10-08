@@ -1,4 +1,7 @@
 {
+  "functions": {
+    "api/google-sheets.js": { "maxDuration": 60 }
+  },
   "headers": [
     {
       "source": "/service-worker.js",

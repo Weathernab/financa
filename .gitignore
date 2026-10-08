@@ -1,5 +1,7 @@
 dist/
 finance-current-data.json
+recovered-admin-from-leveldb.json
+recovered-admin-raw.txt
 google-apps-script/
 desktop-main.cjs
 desktop-preload.cjs
