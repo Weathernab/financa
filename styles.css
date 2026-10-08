@@ -2227,6 +2227,30 @@ button:disabled {
     display: none;
   }
 
+  .sidebar::after {
+    content: "";
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    width: 28px;
+    height: calc(72px + env(safe-area-inset-bottom));
+    background: linear-gradient(to right, transparent, rgba(8, 13, 20, 0.92));
+    pointer-events: none;
+    z-index: 101;
+  }
+
+  [data-theme="light"] .sidebar::after {
+    background: linear-gradient(to right, transparent, rgba(255, 255, 255, 0.88));
+  }
+
+  [data-theme="liza"] .sidebar::after {
+    background: linear-gradient(to right, transparent, rgba(255, 245, 250, 0.92));
+  }
+
+  .sidebar.nav-at-end::after {
+    display: none;
+  }
+
   .nav {
     display: flex;
     width: max-content;

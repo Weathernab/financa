@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "80";
+const APP_VERSION = "81";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -1827,7 +1827,8 @@ function activeNavParent(id = active) {
   if (["transactions", "incomes", "expenses"].includes(id)) return "transactions";
   if (["wealth", "accounts", "investments", "networth"].includes(id)) return "wealth";
   if (["liabilities", "taxes"].includes(id)) return "liabilities";
-  if (["settings", "imports", "setup"].includes(id)) return "settings";
+  if (["settings", "setup"].includes(id)) return "settings";
+  if (id === "imports") return "transactions";
   return id;
 }
 
@@ -2531,9 +2532,15 @@ function render() {
   bind();
   const currentSidebar = document.querySelector(".sidebar");
   if (currentSidebar) {
+    const updateNavEdge = () => {
+      const atEnd = currentSidebar.scrollWidth - currentSidebar.clientWidth - currentSidebar.scrollLeft < 4;
+      currentSidebar.classList.toggle("nav-at-end", atEnd);
+    };
     requestAnimationFrame(() => {
       currentSidebar.scrollLeft = mobileNavScrollLeft;
+      updateNavEdge();
     });
+    currentSidebar.addEventListener("scroll", updateNavEdge, { passive: true });
   }
 }
 
@@ -2579,7 +2586,7 @@ function addActionMenu() {
     <button class="button add-main" type="button" aria-label="Dodaj" data-action="toggle-add-menu">${icon("plus")}<span>Dodaj</span></button>
     ${addMenuOpen ? `<div class="action-menu">${actions.map(([collection, label, iconName]) =>
       `<button type="button" data-add="${collection}"><span>${icon(iconName)}</span>${label}</button>`
-    ).join("")}</div>` : ""}
+    ).join("")}<button type="button" data-nav="imports"><span>${icon("upload")}</span>Uvozi transakcije</button></div>` : ""}
   </div>`;
 }
 
@@ -4862,7 +4869,10 @@ function settingsDataView() {
     </div>
   </div></div>
   ${backupHistoryView()}
-  <div class="settings-embedded-import">${importsView()}</div>`;
+  <div class="card"><div class="card-body">
+    <p class="settings-note">Uvoz bančnih/Revolut transakcij je zdaj dostopen prek gumba <strong>+ Dodaj → Uvozi transakcije</strong> na strani Transakcije.</p>
+    <button class="button secondary" type="button" data-nav="imports">Odpri uvoz transakcij</button>
+  </div></div>`;
 }
 
 function settingsCategoriesView() {
