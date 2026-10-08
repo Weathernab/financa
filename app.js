@@ -1,4 +1,4 @@
-﻿const EUR = new Intl.NumberFormat("sl-SI", { style: "currency", currency: "EUR" });
+const EUR = new Intl.NumberFormat("sl-SI", { style: "currency", currency: "EUR" });
 const NUMBER = new Intl.NumberFormat("sl-SI", { maximumFractionDigits: 1 });
 const STORAGE_KEY = "osebni-financni-dashboard-v1";
 const PROFILE_REGISTRY_KEY = "financa-profili-v1";
@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "75";
+const APP_VERSION = "76";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -4774,6 +4774,7 @@ function settingsDataView() {
       ${localBackupButton}
       <label class="button secondary">Uvozi JSON<input type="file" accept="application/json" data-action="import-json" hidden></label>
       <button class="button secondary" data-nav="setup">Odpri začetni setup</button>
+      ${currentProfile.role === "admin" ? `<button class="button secondary" data-action="repair-income-balances">Popravi manjkajoča stanja prihodkov</button>` : ""}
       <button class="button danger ghost" data-action="clear">Izbriši vse podatke</button>
     </div>
   </div></div>
@@ -4905,116 +4906,6 @@ function settingsSyncView() {
   </div>`;
 }
 
-function legacySettingsView() {
-  const sheets = googleSheetsConfig();
-  const serverManagedAuth = hasServerManagedCloudAuth();
-  const localBackupButton = currentProfile.role === "admin" && location.protocol.startsWith("http")
-    ? `<button class="button secondary" data-action="local-backup">Shrani kopijo za namizno aplikacijo</button>`
-    : "";
-  return `<div class="settings-panel">
-    ${pwaInstallView()}
-    <div class="card profile-settings">
-      <div class="card-header">
-        <div><h3>Moj profil</h3><p>Prijavljen kot ${escapeHtml(currentProfile.name)}.</p></div>
-        <span class="pill">${currentProfile.role === "admin" ? "Skrbnik" : "Uporabnik"}</span>
-      </div>
-      <div class="card-body">
-        <form class="form-grid" data-change-profile-key>
-          <label>Trenutni ključ<input type="password" name="currentKey" autocomplete="current-password" required></label>
-          <label>Novi ključ<input type="password" name="newKey" autocomplete="new-password" minlength="4" required></label>
-          <label>Ponovi novi ključ<input type="password" name="confirmKey" autocomplete="new-password" minlength="4" required></label>
-          <div class="profile-form-action"><button class="button" type="submit">Spremeni ključ</button></div>
-        </form>
-      </div>
-    </div>
-    ${currentProfile.role === "admin" ? adminProfilesView() : ""}
-    ${currentProfile.role === "admin" ? roundUpSavingsSettingsView() : ""}
-    <div class="card"><div class="card-header"><h3>Osnovne nastavitve</h3></div><div class="card-body form-grid">
-      <label>Začetni mesec<input type="month" data-setting="startMonth" value="${state.settings.startMonth}"></label>
-      <label>Privzeta valuta<select data-setting="currency"><option value="EUR" selected>EUR</option></select></label>
-      <label>Način<select data-setting="theme">${option("light", state.settings.theme)}${option("dark", state.settings.theme)}</select></label>
-      <div class="full"><button class="button secondary" data-nav="setup">Odpri začetni setup</button></div>
-    </div></div>
-    ${currentProfile.role === "admin" ? `<div class="card cloud-settings">
-      <div class="card-header">
-        <div><h3>Google Sheets backend</h3><p>Sinhronizacija med napravami z lokalno varnostno kopijo.</p></div>
-        <span class="sync-badge ${cloudStatus.state}">${
-          cloudStatus.state === "success" ? "Povezano"
-            : cloudStatus.state === "pending" ? "Povezujem"
-              : sheets.enabled ? "Potrebno preverjanje" : "Ni povezano"
-        }</span>
-      </div>
-      <div class="card-body">
-        <form class="form-grid" data-google-sheets-form>
-          <label class="full">URL spletne aplikacije
-            <input type="url" name="endpoint" value="${escapeAttr(sheets.endpoint)}" placeholder="https://script.google.com/macros/s/.../exec ali prazno, če je nastavljen Vercel env">
-          </label>
-          <label class="full">Sinhronizacijski ključ
-            <input type="password" name="syncKey" value="${escapeAttr(sheets.syncKey)}" autocomplete="off" placeholder="${serverManagedAuth ? "V PWA ga lahko nastavi Vercel env" : "Enak ključ kot v Apps Script kodi"}" ${serverManagedAuth ? "" : "required"}>
-          </label>
-          <p class="settings-note full">Pri mobilni PWA lahko URL ostane prazen, če je v Vercelu nastavljen GOOGLE_APPS_SCRIPT_URL. Sinhronizacijski ključ lahko ostane prazen, če je v Vercelu nastavljen GOOGLE_APPS_SCRIPT_SYNC_KEY.</p>
-          <div class="full cloud-actions">
-            <button class="button" type="submit">${sheets.enabled ? "Preveri povezavo" : "Poveži Google Sheets"}</button>
-            ${sheets.enabled ? `
-              <button class="button secondary" type="button" data-action="cloud-pull">Prenesi iz Sheets</button>
-              <button class="button secondary" type="button" data-action="cloud-push">Pošlji v Sheets</button>
-              <button class="button danger ghost" type="button" data-action="cloud-disconnect">Odklopi</button>
-            ` : ""}
-          </div>
-        </form>
-        <div class="sync-status ${cloudStatus.state}">
-          <span class="sync-dot"></span>
-          <div><strong>${escapeHtml(cloudStatus.message)}</strong>${sheets.lastSyncAt ? `<small>Zadnja uspešna sinhronizacija: ${formatSyncTime(sheets.lastSyncAt)}</small>` : ""}</div>
-        </div>
-        <p class="settings-note">Finančni podatki se pošiljajo samo v tvoj Apps Script in Google Sheet. URL ter ključ ostaneta shranjena lokalno na tej napravi.</p>
-      </div>
-    </div>` : userCloudSettingsView(sheets)}
-    <div class="card"><div class="card-header"><h3>Podatki</h3></div><div class="card-body">
-      <div class="actions" style="justify-content:flex-start">
-        <button class="button" data-action="export-json">Izvozi JSON</button>
-        <button class="button secondary" data-action="export-csv">Izvozi CSV</button>
-        ${localBackupButton}
-        <label class="button secondary">Uvozi JSON<input type="file" accept="application/json" data-action="import-json" hidden></label>
-        ${currentProfile.role === "admin" ? `<button class="button secondary" data-action="repair-income-balances">Popravi manjkajoča stanja prihodkov</button>` : ""}
-        <button class="button danger" data-action="clear">Izbriši vse podatke</button>
-      </div>
-    </div></div>
-  </div>`;
-}
-
-function userCloudSettingsView(sheets) {
-  const usable = canUseCloudEndpoint(sheets);
-  const serverManagedAuth = hasServerManagedCloudAuth();
-  return `<div class="card cloud-settings">
-    <div class="card-header">
-      <div><h3>Google Sheets backend</h3><p>Sinhronizacija podatkov tega profila.</p></div>
-      <span class="sync-badge ${cloudStatus.state}">${
-        cloudStatus.state === "success" ? "Povezano"
-          : cloudStatus.state === "pending" ? "Povezujem"
-            : usable ? "Na voljo" : "Ni povezan"
-      }</span>
-    </div>
-    <div class="card-body">
-      <div class="sync-status ${cloudStatus.state}">
-        <span class="sync-dot"></span>
-        <div><strong>${escapeHtml(cloudStatus.message)}</strong>${sheets.lastSyncAt ? `<small>Zadnja uspešna sinhronizacija: ${formatSyncTime(sheets.lastSyncAt)}</small>` : ""}</div>
-      </div>
-      <form class="form-grid" data-google-sheets-form>
-        <label class="full">URL spletne aplikacije
-          <input type="url" name="endpoint" value="${escapeAttr(sheets.endpoint)}" placeholder="https://script.google.com/macros/s/.../exec">
-        </label>
-        <label class="full">Sinhronizacijski ključ
-          <input type="password" name="syncKey" value="${escapeAttr(sheets.syncKey)}" autocomplete="off" placeholder="${serverManagedAuth ? "Nastavljen v okolju" : "Enak ključ kot v Apps Script kodi"}" ${serverManagedAuth ? "" : "required"}>
-        </label>
-        <div class="full cloud-actions">
-          <button class="button" type="submit">${usable ? "Preveri povezavo" : "Poveži Google Sheets"}</button>
-          ${usable ? `<button class="button secondary" type="button" data-action="cloud-pull">Prenesi iz Sheets</button><button class="button secondary" type="button" data-action="cloud-push">Pošlji v Sheets</button><button class="button danger ghost" type="button" data-action="cloud-disconnect">Odklopi</button>` : ""}
-        </div>
-      </form>
-      <p class="settings-note">Tvoji podatki so ločeni od drugih profilov in se sinhronizirajo pod internim ID-jem profila.</p>
-    </div>
-  </div>`;
-}
 
 function roundUpSavingsSettingsView() {
   const bank = (state.accounts || []).find((account) => canonicalAssetKey(account) === "banka");
