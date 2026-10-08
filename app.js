@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "78";
+const APP_VERSION = "79";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -398,6 +398,11 @@ window.addEventListener("online", () => {
   cloudStatus = { state: "pending", message: "Povezava je obnovljena. Sinhroniziram spremembe ..." };
   render();
   queueCloudSave();
+});
+
+window.addEventListener("pointerdown", (event) => {
+  if (!isLizaProfile()) return;
+  triggerMiniHeartBurst(event.clientX, event.clientY);
 });
 
 async function hashProfileKey(value) {
@@ -1014,6 +1019,30 @@ function triggerHeartBurst() {
   }
   document.body.appendChild(layer);
   setTimeout(() => layer.remove(), 5000);
+}
+
+let miniHeartThrottle = 0;
+
+function triggerMiniHeartBurst(x, y) {
+  const now = Date.now();
+  if (now - miniHeartThrottle < 120) return;
+  miniHeartThrottle = now;
+  const layer = document.createElement("div");
+  layer.className = "heart-pop-layer";
+  const hearts = ["💗", "💖", "💕"];
+  const count = 4 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < count; i += 1) {
+    const span = document.createElement("span");
+    span.textContent = hearts[i % hearts.length];
+    span.style.left = `${x}px`;
+    span.style.top = `${y}px`;
+    span.style.setProperty("--drift", `${Math.round(Math.random() * 70 - 35)}px`);
+    span.style.animationDelay = `${Math.random() * 0.1}s`;
+    span.style.fontSize = `${12 + Math.random() * 10}px`;
+    layer.appendChild(span);
+  }
+  document.body.appendChild(layer);
+  setTimeout(() => layer.remove(), 1000);
 }
 
 function save({ touch = true } = {}) {
