@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "83";
+const APP_VERSION = "85";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -268,13 +268,14 @@ const navItems = [
   ["goals", "Cilji", "Napredek finančnih ciljev"],
   ["monthly", "Mesečni pregled", "Kaj se je zgodilo ta mesec"],
   ["analytics", "Analitika", "Preprosti trendi in razdelitve"],
+  ["reviews", "Pregledi", "Cilji, mesečni pregled in analitika"],
   ["imports", "Uvoz podatkov", "Uvoz bančnih in Revolut transakcij"],
   ["setup", "Setup", "Vodeni popis premoženja in dolgov"],
   ["settings", "Nastavitve", "Uvoz, izvoz in tema"],
 ];
 
 const navGroups = [
-  { title: "Pregled", items: ["dashboard", "transactions", "wealth", "liabilities", "goals", "monthly", "analytics"] },
+  { title: "Pregled", items: ["dashboard", "transactions", "wealth", "liabilities", "reviews"] },
   { title: "Sistem", items: ["settings"] },
 ];
 
@@ -292,6 +293,7 @@ const navIcons = {
   goals: icon("target"),
   monthly: icon("calendarCheck"),
   analytics: icon("bars"),
+  reviews: icon("bars"),
   imports: icon("upload"),
   setup: icon("sliders"),
   settings: icon("settings"),
@@ -1827,6 +1829,7 @@ function activeNavParent(id = active) {
   if (["transactions", "incomes", "expenses"].includes(id)) return "transactions";
   if (["wealth", "accounts", "investments", "networth"].includes(id)) return "wealth";
   if (["liabilities", "taxes"].includes(id)) return "liabilities";
+  if (["goals", "monthly", "analytics"].includes(id)) return "reviews";
   if (["settings", "setup"].includes(id)) return "settings";
   if (id === "imports") return "transactions";
   return id;
@@ -2502,7 +2505,8 @@ function render() {
             const nav = navItems.find(([itemId]) => itemId === id);
             if (!nav) return "";
             const [, label] = nav;
-            return `<button class="${activeNavParent() === id ? "active" : ""}" data-nav="${id === "wealth" ? "accounts" : id}"><span class="nav-icon">${navIcons[id]}</span><span>${label}</span></button>`;
+            const navTarget = id === "wealth" ? "accounts" : id === "reviews" ? "goals" : id;
+            return `<button class="${activeNavParent() === id ? "active" : ""}" data-nav="${navTarget}"><span class="nav-icon">${navIcons[id]}</span><span>${label}</span></button>`;
           }).join("")}</div>`).join("")}
         </nav>
         <div class="sidebar-card">
@@ -2621,6 +2625,7 @@ function view() {
   const transactionTabs = [["transactions", "Vse"], ["incomes", "Prihodki"], ["expenses", "Stroški"]];
   const wealthTabs = [["wealth", "Računi"], ["investments", "Investicije"], ["networth", "Net worth"]];
   const liabilityTabs = [["liabilities", "Obveznosti"], ["taxes", "Davki"]];
+  const reviewTabs = [["goals", "Cilji"], ["monthly", "Mesečni pregled"], ["analytics", "Analitika"]];
   const views = {
     dashboard: dashboardView,
     incomes: () => sectionTabs(transactionTabs) + collectionView("incomes", "Prihodki", incomeColumns(), filterHtml("incomes")),
@@ -2632,9 +2637,9 @@ function view() {
     networth: () => sectionTabs(wealthTabs) + netWorthView(),
     liabilities: () => sectionTabs(liabilityTabs) + collectionView("liabilities", "Obveznosti", liabilityColumns()),
     taxes: () => sectionTabs(liabilityTabs) + collectionView("taxes", "Davčni dogodki", taxColumns()),
-    goals: goalsView,
-    monthly: monthlyView,
-    analytics: analyticsView,
+    goals: () => sectionTabs(reviewTabs) + goalsView(),
+    monthly: () => sectionTabs(reviewTabs) + monthlyView(),
+    analytics: () => sectionTabs(reviewTabs) + analyticsView(),
     imports: importsView,
     setup: setupView,
     settings: settingsView,
@@ -2856,7 +2861,7 @@ function modernTransactionsTable(rows) {
       <td>${escapeHtml(tx.date || "")}</td>
       <td>${escapeHtml(tx.categoryGroup || categoryGroupFor(tx.category))}</td>
       <td>${tx.status === "za pregled"
-        ? `<select data-review-category="${escapeAttr(tx.id)}">${importCategories.map((c) => option(c, tx.category)).join("")}</select>`
+        ? `<span class="pill confidence-${tx.confidence || "low"}">${confidenceLevels[tx.confidence] || "Nejasno"}</span><br><select data-review-category="${escapeAttr(tx.id)}">${importCategories.map((c) => option(c, tx.category)).join("")}</select>`
         : `<span class="pill">${escapeHtml(tx.category || "za pregled")}</span>${tx.subcategory ? `<br><small class="muted">${escapeHtml(tx.subcategory)}</small>` : ""}`}</td>
       <td>${escapeHtml(tx.account || "")}</td>
       <td>${escapeHtml(tx.status || "")}</td>
