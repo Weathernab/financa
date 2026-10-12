@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "85";
+const APP_VERSION = "86";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -2084,11 +2084,12 @@ function repairMissingIncomeBalances() {
   const affected = (state.incomes || []).filter(
     (income) => Math.abs(Number(income.amount || 0)) > 0 && !income.balanceAccountId
   );
-  if (!affected.length) return { fixed: 0, totalAmount: 0, unmatched: 0 };
+  if (!affected.length) return { fixed: 0, totalAmount: 0, unmatched: 0, refreshedMonths: 0 };
   createBackup("pred popravilom manjkajočih stanj prihodkov", state);
   let fixed = 0;
   let totalAmount = 0;
   let unmatched = 0;
+  const touchedPeriods = new Map();
   for (const income of affected) {
     const updated = applyIncomeBalance(income);
     if (!updated.balanceAccountId) {
@@ -2098,10 +2099,16 @@ function repairMissingIncomeBalances() {
     replaceRecordById("incomes", income.id, updated);
     fixed += 1;
     totalAmount += Number(updated.balanceImpact || 0);
+    const period = periodFromDate(updated.date);
+    if (period && monthClosure(period.month, period.year)) touchedPeriods.set(period.key, period);
+  }
+  const periods = [...touchedPeriods.values()];
+  if (periods.length) {
+    periods.forEach((period) => rebuildMonthClosure(period.month, period.year, "Popravilo manjkajočih stanj prihodkov"));
   }
   save();
   render();
-  return { fixed, totalAmount, unmatched };
+  return { fixed, totalAmount, unmatched, refreshedMonths: periods.length };
 }
 
 function applyIncomeBalance(income) {
@@ -3011,7 +3018,9 @@ function monthlyView() {
   return `${filterHtml("expenses")}
     <div class="month-close-bar ${closure ? "closed" : ""}">
       <div><strong>${closure ? "Mesec je zaključen" : "Mesec še ni zaključen"}</strong><span>${closure ? `Zaključeno ${formatSyncTime(closure.closedAt)}. Analitične številke so zaklenjene.${closure.recalculatedAt ? ` Popravljeno ${formatSyncTime(closure.recalculatedAt)}.` : ""}` : "Zaključek shrani snapshot, komentar in budgete ter pripravi naslednji mesec."}</span></div>
-      ${closure ? `<span class="sync-badge success">Zaklenjeno</span>` : `<button class="button" type="button" data-action="close-month">Zaključi mesec</button>`}
+      ${closure
+        ? `<span class="sync-badge success">Zaklenjeno</span>${currentProfile.role === "admin" ? `<button class="button secondary" type="button" data-action="rebuild-month-closure">Osveži zaključek</button>` : ""}`
+        : `<button class="button" type="button" data-action="close-month">Zaključi mesec</button>`}
     </div>
     <section class="grid metrics" style="margin-top:14px">
       ${metricCard(["Prihodki", displayed.incomeTotal, monthLabel(filters.month, filters.year), "positive"])}
@@ -5771,6 +5780,14 @@ function bind() {
   }));
   document.querySelectorAll("[data-action='close']").forEach((btn) => btn.addEventListener("click", closeModal));
   document.querySelectorAll("[data-action='close-month']").forEach((btn) => btn.addEventListener("click", openMonthCloseModal));
+  document.querySelectorAll("[data-action='rebuild-month-closure']").forEach((btn) => btn.addEventListener("click", () => {
+    const month = Number(filters.month);
+    const year = Number(filters.year);
+    if (!confirm(`Ponovno izračunam zaključek za ${monthLabel(month, year)} iz trenutnih podatkov? Pred tem bo ustvarjena varnostna kopija.`)) return;
+    refreshClosedMonthsAfterCorrection([{ month, year, key: `${year}-${pad(month)}` }], `Ročni popravek zaključka za ${monthLabel(month, year)}`);
+    save();
+    render();
+  }));
   document.querySelectorAll("[data-create-recurring]").forEach((btn) => btn.addEventListener("click", () => createRecurringTransaction(btn.dataset.createRecurring)));
   document.querySelectorAll("[data-close-month-form]").forEach((form) => form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -5960,7 +5977,7 @@ function bind() {
       alert("Ni bilo najdenih prihodkov z manjkajočim stanjem računa.");
       return;
     }
-    alert(`Popravljenih prihodkov: ${result.fixed} (skupaj ${result.totalAmount.toFixed(2)} €).${result.unmatched ? ` Opozorilo: pri ${result.unmatched} prihodkih računa ni bilo mogoče samodejno prepoznati, preveri jih ročno.` : ""}`);
+    alert(`Popravljenih prihodkov: ${result.fixed} (skupaj ${result.totalAmount.toFixed(2)} €).${result.refreshedMonths ? ` Osvežena analitika za ${result.refreshedMonths} zaključenih mesecev.` : ""}${result.unmatched ? ` Opozorilo: pri ${result.unmatched} prihodkih računa ni bilo mogoče samodejno prepoznati, preveri jih ročno.` : ""}`);
   }));
   document.querySelectorAll("[data-restore-backup]").forEach((btn) => btn.addEventListener("click", () => restoreBackup(btn.dataset.restoreBackup)));
   document.querySelectorAll("[data-delete-backup]").forEach((btn) => btn.addEventListener("click", () => {
