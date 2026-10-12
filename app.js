@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "86";
+const APP_VERSION = "87";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -1725,6 +1725,30 @@ function latestSnapshotBefore(month, year) {
     .sort((a, b) => Number(b.year) * 12 + Number(b.month) - (Number(a.year) * 12 + Number(a.month)))[0];
 }
 
+function reconstructAccountsAsOf(cutoffDate) {
+  const original = state.accounts;
+  state.accounts = structuredClone(original || []);
+  try {
+    (state.expenses || []).filter((item) => item.date > cutoffDate).forEach(restoreExpenseBalance);
+    (state.incomes || []).filter((item) => item.date > cutoffDate).forEach(restoreIncomeBalance);
+    (state.transactions || []).filter((item) => item.transferManaged && item.date > cutoffDate).forEach(restoreTransferBalance);
+    return state.accounts;
+  } finally {
+    state.accounts = original;
+  }
+}
+
+function reconstructNetWorthAsOf(month, year) {
+  const maxDay = new Date(Number(year), Number(month), 0).getDate();
+  const cutoff = iso(Number(year), Number(month), maxDay);
+  const reconstructedAccounts = reconstructAccountsAsOf(cutoff);
+  const original = state.accounts;
+  state.accounts = reconstructedAccounts;
+  const breakdown = netWorthBreakdown();
+  state.accounts = original;
+  return { assets: breakdown.assetTotal, liabilities: breakdown.liabilityTotal, netWorth: breakdown.assetTotal - breakdown.liabilityTotal, cutoff };
+}
+
 function snapshotForMonth(month, year) {
   return (state.snapshots || []).find((item) =>
     Number(item.month) === Number(month) && Number(item.year) === Number(year)
@@ -3104,13 +3128,14 @@ function closeMonth(values) {
   if (monthClosure(month, year)) return closeModal();
   const data = monthlyData(month, year);
   const analytics = analyticsMonthlyData(month, year, { ignoreClosure: true });
+  const reconstructed = reconstructNetWorthAsOf(month, year);
   createBackup(`pred zaključkom ${month}/${year}`, state);
   const snapshot = {
     id: snapshotForMonth(month, year)?.id || crypto.randomUUID(),
     month, year,
-    assets: data.assets,
-    liabilities: data.liabilities,
-    netWorth: data.netWorth,
+    assets: reconstructed.assets,
+    liabilities: reconstructed.liabilities,
+    netWorth: reconstructed.netWorth,
     note: `Zaključek meseca ${monthLabel(month, year)}`,
   };
   replaceOrInsertRecord("snapshots", snapshot);
@@ -3133,7 +3158,7 @@ function closeMonth(values) {
       saved: analytics.saved,
       savingsRate: analytics.savingsRate,
       invested: data.invested,
-      netWorth: data.netWorth,
+      netWorth: reconstructed.netWorth,
       expenseByGroup: groupByCategoryGroup(data.expenses),
       expenseByCategory: groupBy(data.expenses, "category"),
       expenseByKind: groupBy(data.expenses, "kind"),
@@ -3183,14 +3208,15 @@ function rebuildMonthClosure(month, year, reason) {
   if (!existing) return false;
   const data = monthlyData(month, year);
   const analytics = analyticsMonthlyData(month, year, { ignoreClosure: true });
+  const reconstructed = reconstructNetWorthAsOf(month, year);
   const snapshot = {
     id: snapshotForMonth(month, year)?.id || crypto.randomUUID(),
     month,
     year,
-    assets: data.assets,
-    liabilities: data.liabilities,
-    netWorth: data.netWorth,
-    note: `Popravljen zaključek meseca ${monthLabel(month, year)}`,
+    assets: reconstructed.assets,
+    liabilities: reconstructed.liabilities,
+    netWorth: reconstructed.netWorth,
+    note: `Popravljen zaključek meseca ${monthLabel(month, year)} (rekonstruirano iz knjige transakcij)`,
   };
   replaceOrInsertRecord("snapshots", snapshot);
   replaceRecordById("monthClosures", existing.id, {
@@ -3208,7 +3234,7 @@ function rebuildMonthClosure(month, year, reason) {
       saved: analytics.saved,
       savingsRate: analytics.savingsRate,
       invested: data.invested,
-      netWorth: data.netWorth,
+      netWorth: reconstructed.netWorth,
       expenseByGroup: groupByCategoryGroup(data.expenses),
       expenseByCategory: groupBy(data.expenses, "category"),
       expenseByKind: groupBy(data.expenses, "kind"),
