@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "88";
+const APP_VERSION = "89";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -97,6 +97,7 @@ const fields = {
     ["subcategory", "text", "Podkategorija"],
     ["account", "account-select", "Račun"],
     ["kind", "select", "Vrsta", ["fiksen", "variabilen", "enkratni večji"]],
+    ["linkedLiabilityId", "liability-id-select", "Poveži z obveznostjo (zmanjša dolg)"],
     ["note", "textarea", "Opomba"],
   ],
   transactions: [
@@ -1725,6 +1726,35 @@ function latestSnapshotBefore(month, year) {
     .sort((a, b) => Number(b.year) * 12 + Number(b.month) - (Number(a.year) * 12 + Number(a.month)))[0];
 }
 
+function historicalEntryAsOf(history, cutoffDate) {
+  if (!Array.isArray(history) || !history.length) return undefined;
+  const applicable = history.filter((entry) => entry.date <= cutoffDate);
+  if (!applicable.length) return null; // history exists but starts after cutoff - didn't exist yet
+  return applicable.reduce((latest, entry) => (entry.date >= latest.date ? entry : latest));
+}
+
+function reconstructLiabilitiesAsOf(cutoffDate) {
+  return (state.liabilities || [])
+    .map((item) => {
+      const entry = historicalEntryAsOf(item.history, cutoffDate);
+      if (entry === undefined) return item; // no history tracked yet - fall back to current (legacy record)
+      if (entry === null) return null; // didn't exist as of cutoff
+      return { ...item, amount: entry.amount, status: entry.status };
+    })
+    .filter(Boolean);
+}
+
+function reconstructInvestmentsAsOf(cutoffDate) {
+  return (state.investments || [])
+    .map((item) => {
+      const entry = historicalEntryAsOf(item.history, cutoffDate);
+      if (entry === undefined) return item;
+      if (entry === null) return null;
+      return { ...item, currentValue: entry.currentValue };
+    })
+    .filter(Boolean);
+}
+
 function reconstructAccountsAsOf(cutoffDate) {
   const original = state.accounts;
   state.accounts = structuredClone(original || []);
@@ -1742,10 +1772,18 @@ function reconstructNetWorthAsOf(month, year) {
   const maxDay = new Date(Number(year), Number(month), 0).getDate();
   const cutoff = iso(Number(year), Number(month), maxDay);
   const reconstructedAccounts = reconstructAccountsAsOf(cutoff);
-  const original = state.accounts;
+  const reconstructedLiabilities = reconstructLiabilitiesAsOf(cutoff);
+  const reconstructedInvestments = reconstructInvestmentsAsOf(cutoff);
+  const originalAccounts = state.accounts;
+  const originalLiabilities = state.liabilities;
+  const originalInvestments = state.investments;
   state.accounts = reconstructedAccounts;
+  state.liabilities = reconstructedLiabilities;
+  state.investments = reconstructedInvestments;
   const breakdown = netWorthBreakdown();
-  state.accounts = original;
+  state.accounts = originalAccounts;
+  state.liabilities = originalLiabilities;
+  state.investments = originalInvestments;
   return { assets: breakdown.assetTotal, liabilities: breakdown.liabilityTotal, netWorth: breakdown.assetTotal - breakdown.liabilityTotal, cutoff };
 }
 
@@ -1939,6 +1977,9 @@ function upsert(collection, values) {
     closeModal();
     return;
   }
+  if (collection === "liabilities" || collection === "investments") {
+    clean.history = nextHistoryEntries(collection, original, clean);
+  }
   if (clean.id) {
     replaceRecordById(collection, clean.id, clean);
   } else {
@@ -1946,6 +1987,60 @@ function upsert(collection, values) {
   }
   save();
   closeModal();
+}
+
+function nextHistoryEntries(collection, original, clean, entryDate = iso(currentYear, currentMonth, now.getDate())) {
+  const history = [...(original?.history || [])];
+  if (collection === "liabilities") {
+    const amount = Number(clean.amount || 0);
+    const status = clean.status || "odprto";
+    const last = history[history.length - 1];
+    if (!last || Number(last.amount) !== amount || last.status !== status) {
+      history.push({ date: entryDate, amount, status });
+    }
+    return history;
+  }
+  const currentValue = Number(clean.currentValue || 0);
+  const last = history[history.length - 1];
+  if (!last || Number(last.currentValue) !== currentValue) {
+    history.push({ date: entryDate, currentValue });
+  }
+  return history;
+}
+
+function applyLiabilityReduction(expense) {
+  if (!expense.linkedLiabilityId) return { linkedLiabilityId: "", liabilityImpact: 0 };
+  const liability = (state.liabilities || []).find((item) => item.id === expense.linkedLiabilityId);
+  if (!liability) return { linkedLiabilityId: "", liabilityImpact: 0 };
+  const impact = Math.abs(Number(expense.amount || 0));
+  const nextAmount = Math.max(0, Number(liability.amount || 0) - impact);
+  const nextStatus = nextAmount <= 0.004 ? "plačano" : liability.status;
+  const updated = {
+    ...liability,
+    amount: nextAmount,
+    status: nextStatus,
+    updatedAt: new Date().toISOString(),
+  };
+  updated.history = nextHistoryEntries("liabilities", liability, updated, expense.date);
+  replaceRecordById("liabilities", liability.id, updated);
+  return { linkedLiabilityId: liability.id, liabilityImpact: impact };
+}
+
+function restoreLiabilityReduction(expense) {
+  const impact = Number(expense?.liabilityImpact || 0);
+  if (!expense?.linkedLiabilityId || impact <= 0) return;
+  const liability = (state.liabilities || []).find((item) => item.id === expense.linkedLiabilityId);
+  if (!liability) return;
+  const restoredAmount = Number(liability.amount || 0) + impact;
+  const restoredStatus = restoredAmount > 0.004 && liability.status === "plačano" ? "odprto" : liability.status;
+  const updated = {
+    ...liability,
+    amount: restoredAmount,
+    status: restoredStatus,
+    updatedAt: new Date().toISOString(),
+  };
+  updated.history = nextHistoryEntries("liabilities", liability, updated, expense.date);
+  replaceRecordById("liabilities", liability.id, updated);
 }
 
 function replaceRecordById(collection, id, replacement) {
@@ -2300,7 +2395,10 @@ function warnIfBalanceNotApplied(entry) {
 
 function upsertExpense(clean, syncTransaction = false, options = {}) {
   const existing = (state.expenses || []).find((item) => item.id === clean.id);
-  if (existing) restoreExpenseBalance(existing);
+  if (existing) {
+    restoreExpenseBalance(existing);
+    restoreLiabilityReduction(existing);
+  }
   let row = {
     ...(existing || {}),
     ...clean,
@@ -2309,6 +2407,8 @@ function upsertExpense(clean, syncTransaction = false, options = {}) {
     amount: Math.abs(Number(clean.amount || 0)),
     balanceAccountId: "",
     balanceImpact: 0,
+    linkedLiabilityId: clean.linkedLiabilityId || "",
+    liabilityImpact: 0,
   };
   row = withCategoryGroup(row);
 
@@ -2321,6 +2421,7 @@ function upsertExpense(clean, syncTransaction = false, options = {}) {
   }
 
   row = applyExpenseBalance(row);
+  row = { ...row, ...applyLiabilityReduction(row) };
   replaceRecordById("expenses", row.id, row);
 
   if (syncTransaction) {
@@ -2385,6 +2486,7 @@ function deleteExpenseRecord(id, removeTransaction = false) {
   const expense = (state.expenses || []).find((item) => item.id === id);
   if (!expense) return;
   restoreExpenseBalance(expense);
+  restoreLiabilityReduction(expense);
   removeRecordById("expenses", id);
   if (removeTransaction) {
     const linked = (state.transactions || []).find((item) =>
@@ -3828,6 +3930,7 @@ function saveSetupMode(form) {
       note,
       setupKey: debt.key,
       updatedAt: new Date().toISOString(),
+      history: nextHistoryEntries("liabilities", existing, { amount: debt.amount, status: "odprto" }),
     };
     const stillInLiabilities = existing && state.liabilities.some((item) => item.id === existing.id);
     state.liabilities = stillInLiabilities ? state.liabilities.map((item) => (item.id === existing.id ? row : item)) : [row, ...state.liabilities];
@@ -5615,6 +5718,13 @@ function fieldHtml(name, type, label, value = "", options = []) {
       `<option value="${escapeAttr(account.id)}" ${account.id === value ? "selected" : ""}>${escapeHtml(account.name)} · ${money(account.balance)}</option>`
     ).join("");
     return `<label class="${cls}">${label}<select name="${name}" required><option value="">Izberi račun</option>${accountOptions}</select></label>`;
+  }
+  if (type === "liability-id-select") {
+    const liabilities = (state.liabilities || []).filter((item) => item.status !== "plačano" && item.status !== "preklicano" || item.id === value);
+    const liabilityOptions = liabilities.map((item) =>
+      `<option value="${escapeAttr(item.id)}" ${item.id === value ? "selected" : ""}>${escapeHtml(item.name)} · ${money(item.amount)} odprto</option>`
+    ).join("");
+    return `<label class="${cls}">${label}<select name="${name}"><option value="">Brez povezave</option>${liabilityOptions}</select></label>`;
   }
   if (type === "textarea") return `<label class="${cls}">${label}<textarea name="${name}">${escapeHtml(value || "")}</textarea></label>`;
   if (type === "date") return `<label class="${cls}">${label}<input name="${name}" type="date" value="${escapeAttr(normalizeDateValue(value))}" ${required}></label>`;
