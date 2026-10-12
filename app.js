@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "87";
+const APP_VERSION = "88";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -2104,6 +2104,73 @@ function restoreIncomeBalance(income) {
   );
 }
 
+function relinkOrphanedAccountReferences() {
+  const validIds = new Set((state.accounts || []).map((account) => account.id));
+  let relinked = 0;
+  let unmatched = 0;
+
+  state.expenses = (state.expenses || []).map((expense) => {
+    let row = expense;
+    if (row.balanceAccountId && !validIds.has(row.balanceAccountId)) {
+      const account = findExpenseAccount(row.account);
+      if (account) {
+        row = { ...row, balanceAccountId: account.id };
+        relinked += 1;
+      } else {
+        unmatched += 1;
+      }
+    }
+    if (row.roundUpSavingsAccountId && !validIds.has(row.roundUpSavingsAccountId)) {
+      const savings = roundUpSavingsAccount();
+      if (savings) {
+        row = { ...row, roundUpSavingsAccountId: savings.id };
+        relinked += 1;
+      } else {
+        unmatched += 1;
+      }
+    }
+    return row;
+  });
+
+  state.incomes = (state.incomes || []).map((income) => {
+    if (!income.balanceAccountId || validIds.has(income.balanceAccountId)) return income;
+    const account = findExpenseAccount(income.account);
+    if (account) {
+      relinked += 1;
+      return { ...income, balanceAccountId: account.id };
+    }
+    unmatched += 1;
+    return income;
+  });
+
+  state.transactions = (state.transactions || []).map((tx) => {
+    if (!tx.transferManaged) return tx;
+    let row = tx;
+    const [fromName, toName] = String(tx.account || "").split("→").map((part) => part.trim());
+    if (row.fromAccountId && !validIds.has(row.fromAccountId)) {
+      const account = findExpenseAccount(fromName);
+      if (account) {
+        row = { ...row, fromAccountId: account.id };
+        relinked += 1;
+      } else {
+        unmatched += 1;
+      }
+    }
+    if (row.toAccountId && !validIds.has(row.toAccountId)) {
+      const account = findExpenseAccount(toName);
+      if (account) {
+        row = { ...row, toAccountId: account.id };
+        relinked += 1;
+      } else {
+        unmatched += 1;
+      }
+    }
+    return row;
+  });
+
+  return { relinked, unmatched };
+}
+
 function repairMissingIncomeBalances() {
   const affected = (state.incomes || []).filter(
     (income) => Math.abs(Number(income.amount || 0)) > 0 && !income.balanceAccountId
@@ -3720,6 +3787,8 @@ function saveSetupMode(form) {
     name: String(row.querySelector("[data-vehicle-name]")?.value || "").trim(),
     amount: Number(row.querySelector("[data-vehicle-value]")?.value || 0),
   })).filter((row) => row.name && row.amount > 0);
+  const previousAccountsByKey = new Map((state.accounts || []).map((item) => [canonicalAssetKey(item), item]));
+  const previousLiabilitiesByKey = new Map((state.liabilities || []).map((item) => [canonicalDebtKey(item), item]));
   if (replaceSetup) {
     const assetKeys = new Set(setupAssets.map(([key]) => key));
     const debtKeys = new Set(setupDebts.map(([key]) => key));
@@ -3730,7 +3799,10 @@ function saveSetupMode(form) {
   }
   for (const asset of assetRows) {
     if (asset.amount <= 0) continue;
-    const existing = state.accounts.find((item) => canonicalAssetKey(item) === asset.key);
+    // Keep the original account id (via previousAccountsByKey) even when replaceSetup
+    // wiped it from state.accounts above - otherwise every expense/income that
+    // references this account by balanceAccountId becomes permanently orphaned.
+    const existing = previousAccountsByKey.get(asset.key);
     const row = {
       id: existing?.id || crypto.randomUUID(),
       name: asset.label,
@@ -3740,11 +3812,12 @@ function saveSetupMode(form) {
       setupKey: asset.key,
       updatedAt: new Date().toISOString(),
     };
-    state.accounts = existing ? state.accounts.map((item) => (item.id === existing.id ? row : item)) : [row, ...state.accounts];
+    const stillInAccounts = existing && state.accounts.some((item) => item.id === existing.id);
+    state.accounts = stillInAccounts ? state.accounts.map((item) => (item.id === existing.id ? row : item)) : [row, ...state.accounts];
   }
   for (const debt of debtRows) {
     if (debt.amount <= 0) continue;
-    const existing = state.liabilities.find((item) => canonicalDebtKey(item) === debt.key);
+    const existing = previousLiabilitiesByKey.get(debt.key);
     const row = {
       id: existing?.id || crypto.randomUUID(),
       name: debt.label,
@@ -3756,7 +3829,8 @@ function saveSetupMode(form) {
       setupKey: debt.key,
       updatedAt: new Date().toISOString(),
     };
-    state.liabilities = existing ? state.liabilities.map((item) => (item.id === existing.id ? row : item)) : [row, ...state.liabilities];
+    const stillInLiabilities = existing && state.liabilities.some((item) => item.id === existing.id);
+    state.liabilities = stillInLiabilities ? state.liabilities.map((item) => (item.id === existing.id ? row : item)) : [row, ...state.liabilities];
   }
   for (const vehicle of vehicleRows) {
     const existing = state.accounts.find((item) => item.id === vehicle.id);
@@ -4929,6 +5003,7 @@ function settingsDataView() {
       <label class="button secondary">Uvozi JSON<input type="file" accept="application/json" data-action="import-json" hidden></label>
       <button class="button secondary" data-nav="setup">Odpri začetni setup</button>
       ${currentProfile.role === "admin" ? `<button class="button secondary" data-action="repair-income-balances">Popravi manjkajoča stanja prihodkov</button>` : ""}
+      ${currentProfile.role === "admin" ? `<button class="button secondary" data-action="relink-account-references">Popravi povezave na stare račune</button>` : ""}
       <button class="button danger ghost" data-action="clear">Izbriši vse podatke</button>
     </div>
   </div></div>
@@ -6004,6 +6079,16 @@ function bind() {
       return;
     }
     alert(`Popravljenih prihodkov: ${result.fixed} (skupaj ${result.totalAmount.toFixed(2)} €).${result.refreshedMonths ? ` Osvežena analitika za ${result.refreshedMonths} zaključenih mesecev.` : ""}${result.unmatched ? ` Opozorilo: pri ${result.unmatched} prihodkih računa ni bilo mogoče samodejno prepoznati, preveri jih ročno.` : ""}`);
+  }));
+  document.querySelectorAll("[data-action='relink-account-references']").forEach((btn) => btn.addEventListener("click", () => {
+    if (!confirm("Popravim povezave starih stroškov/prihodkov/prenosov na trenutne račune (npr. po ponovnem zagonu Setup-a so dobili nove ID-je)? To tudi ponovno izračuna vse zaključene mesece. Pred popravilom bo ustvarjena varnostna kopija.")) return;
+    createBackup("pred popravilom povezav na račune", state);
+    const result = relinkOrphanedAccountReferences();
+    const closures = state.monthClosures || [];
+    closures.forEach((closure) => rebuildMonthClosure(Number(closure.month), Number(closure.year), "Popravilo povezav na stare račune"));
+    save();
+    render();
+    alert(`Ponovno povezanih zapisov: ${result.relinked}.${closures.length ? ` Ponovno izračunanih zaključenih mesecev: ${closures.length}.` : ""}${result.unmatched ? ` Opozorilo: pri ${result.unmatched} zapisih računa ni bilo mogoče samodejno prepoznati, preveri jih ročno.` : ""}`);
   }));
   document.querySelectorAll("[data-restore-backup]").forEach((btn) => btn.addEventListener("click", () => restoreBackup(btn.dataset.restoreBackup)));
   document.querySelectorAll("[data-delete-backup]").forEach((btn) => btn.addEventListener("click", () => {
