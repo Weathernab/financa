@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "96";
+const APP_VERSION = "97";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -2501,7 +2501,7 @@ function upsert(collection, values) {
     clean.history = nextHistoryEntries(collection, original, clean);
   }
   if (clean.id) {
-    replaceRecordById(collection, clean.id, clean);
+    replaceRecordById(collection, clean.id, { ...(original || {}), ...clean });
   } else {
     state[collection] = [{ id: crypto.randomUUID(), ...clean }, ...state[collection]];
   }
@@ -2796,12 +2796,14 @@ function repairMissingIncomeBalances() {
   let totalAmount = 0;
   let unmatched = 0;
   const touchedPeriods = new Map();
+  // Links only: live balances are typically set manually (Setup) after these incomes and already include them.
   for (const income of affected) {
-    const updated = applyIncomeBalance(income);
-    if (!updated.balanceAccountId) {
+    const account = findExpenseAccount(income.account || income.source);
+    if (!account) {
       unmatched += 1;
       continue;
     }
+    const updated = { ...income, balanceAccountId: account.id, balanceImpact: Math.abs(Number(income.amount || 0)) };
     replaceRecordById("incomes", income.id, updated);
     fixed += 1;
     totalAmount += Number(updated.balanceImpact || 0);
@@ -5804,7 +5806,8 @@ function settingsDataView() {
       ${localBackupButton}
       <label class="button secondary">Uvozi JSON<input type="file" accept="application/json" data-action="import-json" hidden></label>
       <button class="button secondary" data-nav="setup">Odpri začetni setup</button>
-      ${currentProfile.role === "admin" ? `<button class="button secondary" data-action="repair-income-balances">Popravi manjkajoča stanja prihodkov</button>` : ""}
+      ${currentProfile.role === "admin" ? `<button class="button secondary" data-action="repair-income-balances">Poveži prihodke brez računa</button>` : ""}
+      ${currentProfile.role === "admin" && (state.monthClosures || []).length ? `<button class="button secondary" data-action="rebuild-all-closures">Preračunaj vse zaključene mesece</button>` : ""}
       ${currentProfile.role === "admin" ? `<button class="button secondary" data-action="relink-account-references">Popravi povezave na stare račune</button>` : ""}
       <button class="button danger ghost" data-action="clear">Izbriši vse podatke</button>
     </div>
@@ -6907,13 +6910,24 @@ function bind() {
   }));
   document.querySelectorAll("[data-action='apply-category-migration']").forEach((btn) => btn.addEventListener("click", applyCategoryMigration));
   document.querySelectorAll("[data-action='repair-income-balances']").forEach((btn) => btn.addEventListener("click", () => {
-    if (!confirm("Popravim stanja računov za prihodke, ki niso bili upoštevani (npr. napačno uvoženi iz bančnega izpiska)? Pred popravilom bo ustvarjena varnostna kopija.")) return;
+    if (!confirm("Povežem prihodke brez računa z ustreznim računom? To popravi izračun preteklih mesecev. Trenutna stanja računov se NE spremenijo - če stanje ni pravilno, ga uredi ročno. Pred popravilom bo ustvarjena varnostna kopija.")) return;
     const result = repairMissingIncomeBalances();
     if (result.fixed === 0 && result.unmatched === 0) {
-      alert("Ni bilo najdenih prihodkov z manjkajočim stanjem računa.");
+      alert("Ni bilo najdenih prihodkov brez povezanega računa.");
       return;
     }
-    alert(`Popravljenih prihodkov: ${result.fixed} (skupaj ${result.totalAmount.toFixed(2)} €).${result.refreshedMonths ? ` Osvežena analitika za ${result.refreshedMonths} zaključenih mesecev.` : ""}${result.unmatched ? ` Opozorilo: pri ${result.unmatched} prihodkih računa ni bilo mogoče samodejno prepoznati, preveri jih ročno.` : ""}`);
+    alert(`Povezanih prihodkov: ${result.fixed} (skupaj ${result.totalAmount.toFixed(2)} €). Stanja računov niso bila spremenjena.${result.refreshedMonths ? ` Osvežena analitika za ${result.refreshedMonths} zaključenih mesecev.` : ""}${result.unmatched ? ` Opozorilo: pri ${result.unmatched} prihodkih računa ni bilo mogoče samodejno prepoznati, preveri jih ročno.` : ""}`);
+  }));
+  document.querySelectorAll("[data-action='rebuild-all-closures']").forEach((btn) => btn.addEventListener("click", () => {
+    const closures = state.monthClosures || [];
+    if (!confirm(`Ponovno izračunam vseh ${closures.length} zaključenih mesecev iz trenutnih podatkov? Uporabi to po ročnem popravku stanja računa. Pred tem bo ustvarjena varnostna kopija.`)) return;
+    refreshClosedMonthsAfterCorrection(
+      closures.map((closure) => ({ month: Number(closure.month), year: Number(closure.year), key: `${closure.year}-${pad(Number(closure.month))}` })),
+      "Ročni preračun vseh zaključenih mesecev"
+    );
+    save();
+    render();
+    alert(`Ponovno izračunanih zaključenih mesecev: ${closures.length}.`);
   }));
   document.querySelectorAll("[data-action='relink-account-references']").forEach((btn) => btn.addEventListener("click", () => {
     if (!confirm("Popravim povezave starih stroškov/prihodkov/prenosov na trenutne račune (npr. po ponovnem zagonu Setup-a so dobili nove ID-je)? To tudi ponovno izračuna vse zaključene mesece. Pred popravilom bo ustvarjena varnostna kopija.")) return;
