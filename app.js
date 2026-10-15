@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "97";
+const APP_VERSION = "98";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -950,6 +950,11 @@ function backupHistory() {
 
 function createBackup(reason = "ročno", sourceState = state) {
   if (!currentProfile || !sourceState) return null;
+  const existing = backupHistory();
+  const newest = existing[0];
+  if (newest && newest.sourceUpdatedAt === (sourceState.meta?.updatedAt || "") && Number(newest.data?.meta?.revision) === Number(sourceState.meta?.revision)) {
+    return newest;
+  }
   const backup = {
     id: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
@@ -958,14 +963,59 @@ function createBackup(reason = "ročno", sourceState = state) {
     summary: syncDataSummary(sourceState),
     data: structuredClone(sourceState),
   };
-  const backups = [backup, ...backupHistory()].slice(0, 12);
-  try {
-    localStorage.setItem(backupStorageKey(), JSON.stringify(backups));
-    return backup;
-  } catch {
-    return null;
-  }
+  return writeBackups([backup, ...existing].slice(0, 12)) ? backup : null;
 }
+
+// Mobile browsers allow ~5 MB of localStorage per site, shared with the app data itself.
+const BACKUP_BUDGET_CHARS = 1500000;
+
+function writeBackups(backups) {
+  let kept = [];
+  let total = 0;
+  for (const backup of backups) {
+    const size = JSON.stringify(backup).length;
+    if (kept.length && total + size > BACKUP_BUDGET_CHARS) break;
+    kept.push(backup);
+    total += size;
+  }
+  while (kept.length) {
+    try {
+      localStorage.setItem(backupStorageKey(), JSON.stringify(kept));
+      return true;
+    } catch {
+      kept = kept.slice(0, -1);
+    }
+  }
+  try {
+    localStorage.removeItem(backupStorageKey());
+  } catch {}
+  return false;
+}
+
+// Frees space by dropping the oldest backups when the device storage is full.
+function persistState() {
+  const key = profileStorageKey();
+  const json = JSON.stringify(state);
+  try {
+    localStorage.setItem(key, json);
+    return true;
+  } catch {}
+  let backups = backupHistory();
+  while (backups.length) {
+    backups = backups.slice(0, -1);
+    try {
+      if (backups.length) localStorage.setItem(backupStorageKey(), JSON.stringify(backups));
+      else localStorage.removeItem(backupStorageKey());
+    } catch {}
+    try {
+      localStorage.setItem(key, json);
+      return true;
+    } catch {}
+  }
+  return false;
+}
+
+let storageFullWarned = false;
 
 function ensureDailyBackup(sourceState = state) {
   if (!currentProfile || !hasMeaningfulFinancialData(sourceState)) return;
@@ -1581,10 +1631,18 @@ function save({ touch = true } = {}) {
       revision: Number(state.meta?.revision || 0) + 1,
     };
   }
-  localStorage.setItem(profileStorageKey(), JSON.stringify(state));
+  if (!persistState()) {
+    cloudStatus = { state: "error", message: "Shramba na tej napravi je polna, zato sprememba ni shranjena lokalno. Poskušam jo shraniti v Google Sheets." };
+    if (!storageFullWarned) {
+      storageFullWarned = true;
+      alert("Shramba na tej napravi je polna. Sprememba ni shranjena lokalno - pred zapiranjem aplikacije počakaj, da se sinhronizira z Google Sheets.");
+    }
+  }
   applyThemeAttribute();
   if (touch) {
-    markCloudSavePending();
+    try {
+      markCloudSavePending();
+    } catch {}
     queueCloudSave();
   }
 }
@@ -3393,9 +3451,9 @@ function dashboardView() {
         <div class="card-header"><h3>Net worth trend</h3><span class="pill">mesečni snapshoti</span></div>
         <div class="card-body">${trendChart(netWorthSeries())}</div>
       </div>
-      <div class="card dashboard-link" data-nav="expenses">
-        <div class="card-header"><h3>Mesečni stroški</h3><span class="pill">${monthLabel(filters.month, filters.year)}</span></div>
-        <div class="card-body">${weeklyColumnChart(data.expenses)}</div>
+      <div class="card dashboard-link" data-nav="analytics">
+        <div class="card-header"><h3>Stroški po mesecih</h3><span class="pill">zadnjih 6 mesecev</span></div>
+        <div class="card-body">${columnChart(monthlyExpenseColumns(), (value) => Math.round(value).toLocaleString("sl-SI"))}</div>
       </div>
       <div class="card dashboard-link" data-nav="expenses">
         <div class="card-header"><h3>Stroški po skupinah</h3></div>
@@ -3594,6 +3652,8 @@ function median(values) {
 }
 
 // An expense is unusual when it is at least 3x the category median and at least 100 EUR above it.
+// The baseline includes one-off expenses on purpose: excluding them would lower the median after
+// each marking and surface new "unusual" expenses in a chain.
 function unusualExpenses(today = iso(currentYear, currentMonth, now.getDate())) {
   const expenses = state.expenses || [];
   const since = shiftIsoDate(today, -120);
@@ -3610,7 +3670,6 @@ function unusualExpenses(today = iso(currentYear, currentMonth, now.getDate())) 
       const others = expenses.filter((other) =>
         other.id !== expense.id
         && other.category === expense.category
-        && other.kind !== "enkratni večji"
         && other.date >= yearBefore
         && other.date <= today
       );
@@ -3921,8 +3980,9 @@ function monthlyView() {
     </section>
     <section class="grid two-col" style="margin-top:14px">
       <div class="card"><div class="card-header"><h3>Največje kategorije stroškov</h3></div><div class="card-body">${bars(expenseCategories)}</div></div>
-      <div class="card"><div class="card-header"><h3>Komentar meseca</h3>${note ? `<button class="button secondary" data-edit="monthlyNotes:${note.id}">Uredi</button>` : `<button class="button" data-add="monthlyNotes">Dodaj komentar</button>`}</div><div class="card-body">${noteHtml(note)}</div></div>
+      <div class="card"><div class="card-header"><h3>Poraba po tednih</h3><span class="pill">${monthLabel(filters.month, filters.year)}</span></div><div class="card-body">${weeklyColumnChart(data.expenses)}</div></div>
     </section>
+    <section class="card" style="margin-top:14px"><div class="card-header"><h3>Komentar meseca</h3>${note ? `<button class="button secondary" data-edit="monthlyNotes:${note.id}">Uredi</button>` : `<button class="button" data-add="monthlyNotes">Dodaj komentar</button>`}</div><div class="card-body">${noteHtml(note)}</div></section>
     ${monthlyBudgetView(filters.month, filters.year)}`;
 }
 
@@ -6145,14 +6205,25 @@ function weeklyExpenseBars(expenses) {
   return weeks;
 }
 
-function weeklyColumnChart(expenses) {
-  const weeks = weeklyExpenseBars(expenses);
-  const max = Math.max(...weeks.map(([, value]) => value), 1);
+function columnChart(entries, formatValue = money) {
+  if (!entries.length) return `<div class="empty">Ni podatkov za prikaz.</div>`;
+  const max = Math.max(...entries.map(([, value]) => value), 1);
   const axisMax = Math.ceil(max / 100) * 100;
   return `<div class="column-chart">
     <div class="column-axis">${[1, 0.75, 0.5, 0.25, 0].map((ratio) => `<span>${money(axisMax * ratio).replace(",00", "")}</span>`).join("")}</div>
-    <div class="columns">${weeks.map(([label, value]) => `<div class="column-item"><strong>${money(value)}</strong><div class="column-track"><span style="height:${Math.max(3, value / max * 100)}%"></span></div><small>${label}</small></div>`).join("")}</div>
+    <div class="columns">${entries.map(([label, value]) => `<div class="column-item"><strong>${formatValue(value)}</strong><div class="column-track"><span style="height:${Math.max(3, value / max * 100)}%"></span></div><small>${label}</small></div>`).join("")}</div>
   </div>`;
+}
+
+function weeklyColumnChart(expenses) {
+  return columnChart(weeklyExpenseBars(expenses));
+}
+
+function monthlyExpenseColumns(limit = 6) {
+  return recordedActivityMonths(limit).map(([month, year]) => [
+    new Date(year, month - 1, 1).toLocaleDateString("sl-SI", { month: "short" }),
+    Number(analyticsMonthlyData(month, year).expenseTotal || 0),
+  ]);
 }
 
 function donutChart(entries) {
