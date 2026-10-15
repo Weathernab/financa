@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "95";
+const APP_VERSION = "96";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -3622,6 +3622,96 @@ function unusualExpenses(today = iso(currentYear, currentMonth, now.getDate())) 
     .sort((a, b) => b.expense.date.localeCompare(a.expense.date));
 }
 
+const SUBSCRIPTION_IGNORED_CATEGORIES = new Set(["interni transfer", "za pregled", "investicije", "gotovina"]);
+
+function subscriptionMerchantKey(name) {
+  return normalizeText(name)
+    .replace(/^vi[-\s]+/, "")
+    .split(",")[0]
+    .replace(/\d+/g, " ")
+    .replace(/[^a-z*&.\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function daysBetween(fromDate, toDate) {
+  return Math.round((new Date(`${toDate}T00:00:00`) - new Date(`${fromDate}T00:00:00`)) / 86400000);
+}
+
+const chargeAmount = (charge) => Math.abs(Number(charge.amount || 0));
+
+function clusterChargesByAmount(charges) {
+  const clusters = [];
+  charges.forEach((charge) => {
+    const amount = chargeAmount(charge);
+    const cluster = clusters.find((items) => Math.abs(chargeAmount(items[items.length - 1]) - amount) <= amount * 0.25);
+    if (cluster) cluster.push(charge);
+    else clusters.push([charge]);
+  });
+  return clusters;
+}
+
+// One charge per month, at least 3 months, ~monthly gaps, and all amounts but one within 25 % of the median
+// (the exception covers a prorated first month or a single price change).
+function subscriptionFromCharges(sorted, today) {
+  const months = new Set(sorted.map((charge) => charge.date.slice(0, 7)));
+  if (sorted.length < 3 || months.size !== sorted.length) return null;
+  const gaps = sorted.slice(1).map((charge, index) => daysBetween(sorted[index].date, charge.date));
+  if (gaps.some((gap) => gap < 20 || gap > 45)) return null;
+  const amounts = sorted.map(chargeAmount);
+  const typical = median(amounts);
+  if (typical <= 0 || amounts.filter((amount) => Math.abs(amount - typical) > typical * 0.25).length > 1) return null;
+  const last = sorted[sorted.length - 1];
+  const lastAmount = chargeAmount(last);
+  const previousAmount = chargeAmount(sorted[sorted.length - 2]);
+  const nextDate = shiftIsoDate(last.date, Math.round(median(gaps)));
+  return {
+    name: last.name,
+    category: last.category,
+    amount: lastAmount,
+    count: sorted.length,
+    firstDate: sorted[0].date,
+    lastDate: last.date,
+    nextDate,
+    active: daysBetween(nextDate, today) <= 10,
+    previousAmount: Math.abs(lastAmount - previousAmount) >= 0.01 ? previousAmount : null,
+  };
+}
+
+function detectSubscriptions(today = iso(currentYear, currentMonth, now.getDate())) {
+  const since = shiftIsoDate(today, -400);
+  const groups = new Map();
+  (state.expenses || [])
+    .filter((expense) => expense.date >= since && expense.date <= today && !SUBSCRIPTION_IGNORED_CATEGORIES.has(expense.category))
+    .forEach((expense) => {
+      const key = subscriptionMerchantKey(expense.name);
+      if (key.length < 3) return;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(expense);
+    });
+  return [...groups.values()]
+    .flatMap((charges) => {
+      const sorted = [...charges].sort((a, b) => a.date.localeCompare(b.date));
+      const monthCount = new Set(sorted.map((charge) => charge.date.slice(0, 7))).size;
+      const candidates = monthCount === sorted.length ? [sorted] : clusterChargesByAmount(sorted);
+      return candidates.map((candidate) => subscriptionFromCharges(candidate, today));
+    })
+    .filter(Boolean)
+    .sort((a, b) => Number(b.active) - Number(a.active) || b.amount - a.amount);
+}
+
+function subscriptionsHtml() {
+  const subscriptions = detectSubscriptions();
+  if (!subscriptions.length) return `<div class="empty">Ni zaznanih naročnin. Naročnina se pokaže, ko je isti trgovec bremenil vsaj 3 mesece zapored s podobnim zneskom.</div>`;
+  const active = subscriptions.filter((item) => item.active);
+  const monthly = active.reduce((total, item) => total + item.amount, 0);
+  return `<div class="subscription-summary"><div><span>Aktivne naročnine</span><strong>${active.length}</strong></div><div><span>Mesečno</span><strong>${money(monthly)}</strong></div><div><span>Letno</span><strong>${money(monthly * 12)}</strong></div></div>
+    <div class="subscription-list">${subscriptions.map((item) => `<div class="subscription-row${item.active ? "" : " is-inactive"}">
+      <div><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.category || "")} · ${item.count}× od ${escapeHtml(item.firstDate)}${item.previousAmount !== null ? ` · <span class="subscription-change">prej ${money(item.previousAmount)}</span>` : ""}</small></div>
+      <div class="subscription-meta"><strong>${money(item.amount)}</strong><small>${item.active ? `naslednje ~${escapeHtml(item.nextDate)}` : `izostalo (pričakovano ${escapeHtml(item.nextDate)})`}</small></div>
+    </div>`).join("")}</div>`;
+}
+
 function markExpenseOneOff(id) {
   const expense = (state.expenses || []).find((item) => item.id === id);
   if (!expense) return;
@@ -4074,6 +4164,10 @@ function analyticsView() {
   <section class="card" style="margin-top:14px">
     <div class="card-header"><h3>Priložnosti za zmanjšanje porabe</h3><span class="pill">${completedMonths.length >= 3 ? "zadnji 3 zaključeni meseci" : "potrebni so 3 meseci"}</span></div>
     <div class="card-body">${spendingRecommendationsHtml()}</div>
+  </section>
+  <section class="card" style="margin-top:14px">
+    <div class="card-header"><div><h3>Zaznane naročnine</h3><p>Samodejno prepoznana mesečna plačila. Samo informativno.</p></div></div>
+    <div class="card-body">${subscriptionsHtml()}</div>
   </section>
   <section class="grid two-col" style="margin-top:14px">
     <div class="card"><div class="card-header"><h3>Primerjava s povprečjem</h3></div><div class="card-body">${monthComparisonHtml()}</div></div>
