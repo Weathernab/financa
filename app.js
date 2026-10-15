@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "89";
+const APP_VERSION = "90";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -655,6 +655,7 @@ async function loginWithKey(key) {
     applyThemeAttribute();
     render();
     if (isLizaProfile()) triggerHeartBurst();
+    if (isTilenProfile()) triggerTankBattle();
     initializeGoogleSheetsSync();
   } catch (error) {
     authMessage = String(error?.message || "Ključ ni pravilen.")
@@ -1000,6 +1001,10 @@ function isLizaProfile(profile = currentProfile) {
   return normalizeText(profile?.name) === "liza";
 }
 
+function isTilenProfile(profile = currentProfile) {
+  return normalizeText(profile?.name) === "tilen";
+}
+
 function applyThemeAttribute() {
   const theme = isLizaProfile() ? "liza" : (state.settings.theme || "dark");
   document.documentElement.dataset.theme = theme;
@@ -1022,6 +1027,268 @@ function triggerHeartBurst() {
   }
   document.body.appendChild(layer);
   setTimeout(() => layer.remove(), 5000);
+}
+
+function tankSvg(id) {
+  const wheels = [30, 54, 78, 102, 126, 150, 174].map((cx) => `
+    <g class="tank-wheel">
+      <circle cx="${cx}" cy="87" r="10" fill="#4b513e" stroke="#1b1e15" stroke-width="2"/>
+      <line x1="${cx - 7}" y1="87" x2="${cx + 7}" y2="87" stroke="#2b2f22" stroke-width="2"/>
+      <line x1="${cx}" y1="80" x2="${cx}" y2="94" stroke="#2b2f22" stroke-width="2"/>
+      <circle cx="${cx}" cy="87" r="3.5" fill="#2b2f22"/>
+    </g>`).join("");
+  return `
+    <svg class="tank-svg" viewBox="0 0 220 110" aria-hidden="true">
+      <defs>
+        <linearGradient id="${id}-hull" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#7d8f55"/><stop offset="0.55" stop-color="#56683a"/><stop offset="1" stop-color="#36431f"/>
+        </linearGradient>
+        <linearGradient id="${id}-turret" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#8a9c60"/><stop offset="1" stop-color="#4a5a30"/>
+        </linearGradient>
+        <linearGradient id="${id}-barrel" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#6a7a48"/><stop offset="0.5" stop-color="#3c4728"/><stop offset="1" stop-color="#262d18"/>
+        </linearGradient>
+      </defs>
+      <ellipse cx="102" cy="104" rx="100" ry="5" fill="rgba(0,0,0,0.45)"/>
+      <line class="tank-antenna" x1="76" y1="30" x2="64" y2="0" stroke="#2a3119" stroke-width="1.6" stroke-linecap="round"/>
+      <g class="tank-barrel">
+        <rect x="138" y="37" width="70" height="7" rx="2" fill="url(#${id}-barrel)"/>
+        <rect x="172" y="35.5" width="11" height="10" rx="2.5" fill="#3a4527"/>
+        <rect class="tank-muzzle" x="204" y="34.5" width="12" height="12" rx="2" fill="#2c3420"/>
+      </g>
+      <path d="M60 54 L72 32 Q76 26 86 26 L126 26 Q134 26 140 32 L150 46 L152 54 Z" fill="url(#${id}-turret)" stroke="#2c3519"/>
+      <ellipse cx="96" cy="42" rx="14" ry="5" fill="#4d5e31" opacity="0.7"/>
+      <ellipse cx="128" cy="36" rx="7" ry="3" fill="#3f4d27" opacity="0.7"/>
+      <rect x="88" y="19" width="18" height="8" rx="3" fill="#5f7240" stroke="#2c3519"/>
+      <path d="M6 72 L22 52 L178 52 L204 64 L196 78 L12 78 Z" fill="url(#${id}-hull)" stroke="#2c3519"/>
+      <ellipse cx="60" cy="62" rx="16" ry="5" fill="#3f4d27" opacity="0.6"/>
+      <ellipse cx="150" cy="60" rx="12" ry="4" fill="#3f4d27" opacity="0.6"/>
+      <rect x="16" y="71" width="176" height="7" rx="2" fill="#4a5a30" stroke="#2c3519"/>
+      <rect x="12" y="76" width="182" height="24" rx="12" fill="#23271c"/>
+      <rect class="tank-tread" x="12" y="76" width="182" height="24" rx="12" fill="none" stroke="#454a38" stroke-width="3" stroke-dasharray="4 3"/>
+      ${wheels}
+    </svg>`;
+}
+
+function triggerTankBattle() {
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+  document.querySelectorAll(".tank-battle").forEach((node) => node.remove());
+
+  const rand = (min, max) => min + Math.random() * (max - min);
+  const layer = document.createElement("div");
+  layer.className = "tank-battle";
+  layer.innerHTML = `
+    <div class="tank tank-left"><div class="tank-drive"><div class="tank-jolt">${tankSvg("tank-l")}</div></div></div>
+    <div class="tank tank-right"><div class="tank-drive"><div class="tank-jolt">${tankSvg("tank-r")}</div></div></div>
+  `;
+  document.body.appendChild(layer);
+
+  const left = layer.querySelector(".tank-left");
+  const right = layer.querySelector(".tank-right");
+  const timers = [];
+  const intervals = [];
+  const later = (ms, fn) => timers.push(setTimeout(fn, ms));
+
+  const fx = (cls, x, y, size, keyframes, options) => {
+    const el = document.createElement("div");
+    el.className = `tank-fx ${cls}`;
+    el.style.width = `${size}px`;
+    el.style.height = `${size}px`;
+    el.style.left = `${x - size / 2}px`;
+    el.style.top = `${y - size / 2}px`;
+    layer.appendChild(el);
+    el.animate(keyframes, { fill: "both", ...options }).onfinish = () => el.remove();
+    return el;
+  };
+
+  const ballistic = (vx, vy, gravity, duration, spin) => {
+    const steps = 12;
+    return Array.from({ length: steps + 1 }, (_, i) => {
+      const t = (i / steps) * (duration / 1000);
+      return {
+        offset: i / steps,
+        opacity: i === steps ? 0 : 1,
+        transform: `translate(${vx * t}px, ${vy * t + 0.5 * gravity * t * t}px) rotate(${(spin * i) / steps}deg)`,
+      };
+    });
+  };
+
+  const tankWidth = () => left.getBoundingClientRect().width;
+  const isLeft = (tank) => tank === left;
+
+  const dust = (tank, count = 1) => {
+    const rect = tank.querySelector(".tank-svg").getBoundingClientRect();
+    const dir = isLeft(tank) ? 1 : -1;
+    const x = isLeft(tank) ? rect.left + rect.width * 0.08 : rect.right - rect.width * 0.08;
+    for (let i = 0; i < count; i++) {
+      const size = rand(0.12, 0.22) * rect.width;
+      fx("tank-dust", x + rand(-8, 8), rect.bottom - 6, size, [
+        { transform: "translate(0, 0) scale(0.4)", opacity: 0.8 },
+        { transform: `translate(${-dir * rand(20, 60)}px, ${-rand(10, 35)}px) scale(1.6)`, opacity: 0 },
+      ], { duration: rand(700, 1100), easing: "ease-out" });
+    }
+  };
+
+  const smokePuff = (x, y, size, driftX, rise, duration, delay = 0) => fx("tank-smoke", x, y, size, [
+    { transform: "translate(0, 0) scale(0.35)", opacity: 0 },
+    { transform: `translate(${driftX * 0.3}px, ${-rise * 0.25}px) scale(0.9)`, opacity: 0.8, offset: 0.2 },
+    { transform: `translate(${driftX}px, ${-rise}px) scale(1.9)`, opacity: 0 },
+  ], { duration, delay, easing: "ease-out" });
+
+  const explode = (x, y) => {
+    const w = tankWidth();
+    fx("tank-flash", x, y, w * 0.95, [
+      { transform: "scale(0.15)", opacity: 1 },
+      { transform: "scale(1)", opacity: 1, offset: 0.25 },
+      { transform: "scale(1.35)", opacity: 0 },
+    ], { duration: 550, easing: "ease-out" });
+    for (let i = 0; i < 7; i++) {
+      fx("tank-fire", x + rand(-0.15, 0.15) * w, y + rand(-0.1, 0.08) * w, rand(0.25, 0.45) * w, [
+        { transform: "translate(0, 0) scale(0.2)", opacity: 1 },
+        { transform: `translate(${rand(-15, 15)}px, ${-rand(10, 25)}px) scale(1)`, opacity: 1, offset: 0.35 },
+        { transform: `translate(${rand(-25, 25)}px, ${-rand(30, 60)}px) scale(1.3)`, opacity: 0 },
+      ], { duration: rand(650, 1000), delay: i * 40, easing: "ease-out" });
+    }
+    for (let i = 0; i < 18; i++) {
+      const angle = rand(-165, -15) * (Math.PI / 180);
+      const speed = rand(220, 560);
+      const duration = rand(900, 1400);
+      const piece = fx("tank-debris", x, y, rand(3, 8), ballistic(Math.cos(angle) * speed, Math.sin(angle) * speed, 1100, duration, rand(-900, 900)), { duration, easing: "linear" });
+      piece.style.background = ["#ffcf5a", "#ff8a1e", "#2b2f22", "#4b513e", "#ffe9a8"][i % 5];
+    }
+    for (let i = 0; i < 9; i++) {
+      smokePuff(x + rand(-0.15, 0.15) * w, y - rand(0, 0.1) * w, rand(0.3, 0.55) * w, rand(-40, 40), rand(90, 180), rand(1800, 2600), 150 + i * 70);
+    }
+    layer.animate([
+      { transform: "translate(0, 0)" },
+      { transform: "translate(9px, -6px)" },
+      { transform: "translate(-8px, 5px)" },
+      { transform: "translate(6px, 3px)" },
+      { transform: "translate(-4px, -3px)" },
+      { transform: "translate(2px, 1px)" },
+      { transform: "translate(0, 0)" },
+    ], { duration: 450, easing: "ease-out" });
+  };
+
+  const hit = (tank) => {
+    const svg = tank.querySelector(".tank-svg");
+    tank.querySelector(".tank-jolt").animate([
+      { transform: "none" },
+      { transform: "translateX(-10px) rotate(3deg)", offset: 0.12 },
+      { transform: "translateX(6px) rotate(-1.5deg)", offset: 0.35 },
+      { transform: "translateX(-3px) rotate(0.8deg)", offset: 0.6 },
+      { transform: "none" },
+    ], { duration: 600, easing: "ease-out" });
+    svg.animate([
+      { filter: "brightness(2.6) saturate(0.3)" },
+      { filter: "brightness(0.7) saturate(0.6)" },
+    ], { duration: 700, fill: "forwards" });
+    intervals.push(setInterval(() => {
+      const rect = svg.getBoundingClientRect();
+      const x = rect.left + rect.width * rand(0.35, 0.6);
+      smokePuff(x, rect.top + rect.height * 0.35, rand(0.15, 0.28) * rect.width, rand(-20, 20), rand(80, 150), rand(1400, 2000));
+      if (Math.random() < 0.6) {
+        fx("tank-fire", x, rect.top + rect.height * 0.45, rand(0.06, 0.12) * rect.width, [
+          { transform: "scale(0.4)", opacity: 0.95 },
+          { transform: `translate(${rand(-6, 6)}px, ${-rand(12, 28)}px) scale(1)`, opacity: 0 },
+        ], { duration: rand(400, 700), easing: "ease-out" });
+      }
+    }, 170));
+  };
+
+  const fire = (shooter, target) => {
+    const dir = isLeft(shooter) ? 1 : -1;
+    const muzzle = shooter.querySelector(".tank-muzzle").getBoundingClientRect();
+    const mx = dir > 0 ? muzzle.right : muzzle.left;
+    const my = muzzle.top + muzzle.height / 2;
+    const w = tankWidth();
+
+    shooter.querySelector(".tank-barrel").animate([
+      { transform: "translateX(0)" },
+      { transform: "translateX(-16px)", offset: 0.1 },
+      { transform: "translateX(0)" },
+    ], { duration: 750, easing: "ease-out" });
+    shooter.querySelector(".tank-jolt").animate([
+      { transform: "none" },
+      { transform: "translateX(-8px) rotate(-2.2deg)", offset: 0.14 },
+      { transform: "translateX(2px) rotate(0.7deg)", offset: 0.5 },
+      { transform: "none" },
+    ], { duration: 700, easing: "ease-out" });
+    shooter.querySelector(".tank-antenna").animate([
+      { transform: "rotate(0)" },
+      { transform: "rotate(14deg)", offset: 0.15 },
+      { transform: "rotate(-9deg)", offset: 0.35 },
+      { transform: "rotate(5deg)", offset: 0.55 },
+      { transform: "rotate(-2deg)", offset: 0.75 },
+      { transform: "rotate(0)" },
+    ], { duration: 1100, easing: "ease-out" });
+
+    fx("tank-flash", mx + dir * w * 0.08, my, w * 0.32, [
+      { transform: "scale(0.2)", opacity: 1 },
+      { transform: "scale(1.1)", opacity: 1, offset: 0.3 },
+      { transform: "scale(1.3)", opacity: 0 },
+    ], { duration: 220, easing: "ease-out" });
+    for (let i = 0; i < 6; i++) {
+      smokePuff(mx + dir * rand(0, 20), my, rand(0.1, 0.2) * w, dir * rand(30, 110), rand(20, 60), rand(1000, 1500), i * 30);
+    }
+    dust(shooter, 3);
+
+    const targetRect = target.querySelector(".tank-svg").getBoundingClientRect();
+    const tx = targetRect.left + targetRect.width * rand(0.42, 0.58);
+    const ty = targetRect.top + targetRect.height * 0.55;
+    const dx = tx - mx;
+    const dy = ty - my;
+    const arc = Math.abs(dx) * 0.07;
+    const steps = 16;
+    const frames = Array.from({ length: steps + 1 }, (_, i) => {
+      const p = i / steps;
+      const angle = Math.atan2(dy - 4 * arc * (1 - 2 * p), dx) * (180 / Math.PI);
+      return {
+        offset: p,
+        transform: `translate(${mx + dx * p}px, ${my + dy * p - 4 * arc * p * (1 - p)}px) rotate(${angle}deg)`,
+      };
+    });
+    const shell = document.createElement("div");
+    shell.className = "tank-shell";
+    layer.appendChild(shell);
+    shell.animate(frames, { duration: Math.min(700, Math.max(380, Math.abs(dx) / 1.6)), easing: "linear", fill: "forwards" }).onfinish = () => {
+      shell.remove();
+      explode(tx, ty);
+      hit(target);
+    };
+  };
+
+  layer.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 250, fill: "forwards" });
+  [left, right].forEach((tank) => {
+    tank.querySelector(".tank-drive").animate([
+      { transform: "translateX(-140%)" },
+      { transform: "translateX(0)" },
+    ], { duration: 1300, easing: "cubic-bezier(.2,.7,.3,1)", fill: "backwards" });
+    tank.querySelector(".tank-jolt").animate([
+      { transform: "translateY(0)" },
+      { transform: "translateY(-1.5px) rotate(-0.4deg)" },
+      { transform: "translateY(0)" },
+    ], { duration: 220, iterations: 6 });
+    tank.querySelectorAll(".tank-wheel").forEach((wheel) => wheel.animate([
+      { transform: "rotate(0)" },
+      { transform: "rotate(900deg)" },
+    ], { duration: 1300, easing: "cubic-bezier(.2,.7,.3,1)" }));
+    tank.querySelector(".tank-tread").animate([
+      { strokeDashoffset: 0 },
+      { strokeDashoffset: -160 },
+    ], { duration: 1300, easing: "cubic-bezier(.2,.7,.3,1)" });
+  });
+  [80, 330, 600, 900].forEach((ms) => later(ms, () => { dust(left, 2); dust(right, 2); }));
+
+  later(1500, () => fire(left, right));
+  later(3000, () => fire(right, left));
+  later(5200, () => layer.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 800, fill: "forwards" }));
+  later(6050, () => {
+    timers.forEach(clearTimeout);
+    intervals.forEach(clearInterval);
+    layer.remove();
+  });
 }
 
 let miniHeartThrottle = 0;

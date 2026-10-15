@@ -2024,9 +2024,116 @@ button:disabled {
   100% { transform: translate(calc(-50% + var(--drift, 0px)), calc(-50% - 60px)) scale(0.75); opacity: 0; }
 }
 
+.tank-battle {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 9999;
+  opacity: 0;
+}
+
+.tank-battle::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse 90% 45% at 50% 100%, rgba(0, 0, 0, 0.6), transparent 70%);
+}
+
+.tank {
+  position: absolute;
+  bottom: max(10%, 88px);
+  width: clamp(118px, 30vw, 330px);
+}
+
+.tank-left {
+  left: 3vw;
+}
+
+.tank-right {
+  right: 3vw;
+  transform: scaleX(-1);
+}
+
+.tank-jolt {
+  transform-origin: 50% 100%;
+}
+
+.tank-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.tank-wheel,
+.tank-barrel,
+.tank-antenna {
+  transform-box: fill-box;
+}
+
+.tank-wheel {
+  transform-origin: center;
+}
+
+.tank-antenna {
+  transform-origin: 100% 100%;
+}
+
+.tank-fx {
+  position: absolute;
+  border-radius: 50%;
+  will-change: transform, opacity;
+}
+
+.tank-flash {
+  background: radial-gradient(circle, #fff 0%, #fff3b0 18%, #ffb347 40%, rgba(255, 90, 20, 0.55) 60%, transparent 72%);
+}
+
+.tank-fire {
+  background: radial-gradient(circle, #fff6c4 0%, #ffc04d 25%, #ff6a1a 55%, rgba(160, 30, 0, 0.5) 75%, transparent 80%);
+}
+
+.tank-smoke {
+  background: radial-gradient(circle, rgba(72, 72, 72, 0.85) 0%, rgba(55, 55, 55, 0.5) 45%, transparent 70%);
+}
+
+.tank-dust {
+  background: radial-gradient(circle, rgba(150, 125, 90, 0.7), transparent 70%);
+}
+
+.tank-debris {
+  border-radius: 1px;
+}
+
+.tank-shell {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 16px;
+  height: 6px;
+  margin: -3px 0 0 -8px;
+  border-radius: 1px 4px 4px 1px;
+  background: linear-gradient(90deg, #b88a3a, #ffe9a8);
+  box-shadow: 0 0 10px 3px rgba(255, 210, 120, 0.85);
+}
+
+.tank-shell::before {
+  content: "";
+  position: absolute;
+  right: 100%;
+  top: 50%;
+  width: 110px;
+  height: 3px;
+  margin-top: -1.5px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, rgba(255, 200, 110, 0.85));
+}
+
 @media (prefers-reduced-motion: reduce) {
   .heart-burst,
-  .heart-pop-layer {
+  .heart-pop-layer,
+  .tank-battle {
     display: none;
   }
 }
