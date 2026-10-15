@@ -2024,6 +2024,10 @@ button:disabled {
   100% { transform: translate(calc(-50% + var(--drift, 0px)), calc(-50% - 60px)) scale(0.75); opacity: 0; }
 }
 
+.review-card {
+  border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+}
+
 .tank-battle {
   position: fixed;
   inset: 0;

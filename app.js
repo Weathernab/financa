@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "91";
+const APP_VERSION = "92";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -2422,6 +2422,8 @@ function sectionTabs(items) {
 
 function openModal(collection, title, item = null) {
   modal = { collection, title, item: item ? { ...item } : null };
+  rowMenuOpen = "";
+  addMenuOpen = false;
   render();
 }
 
@@ -2430,6 +2432,7 @@ function openDeleteProfileModal(profileId) {
   const profile = profiles.find((item) => item.id === profileId);
   if (!profile) return;
   modal = { collection: "deleteProfile", title: "Izbris profila", item: { profileId, profileName: profile.name } };
+  rowMenuOpen = "";
   render();
 }
 
@@ -3482,16 +3485,17 @@ function expenseColumns() {
 function transactionsView() {
   const review = reviewTransactions();
   const ready = recentTransactions(200);
-  return `<section class="grid metrics">
+  const reviewCard = review.length
+    ? `<section class="card review-card"><div class="card-header"><div><h3>Za pregled</h3><p>Te transakcije potrebujejo tvojo potrditev kategorije.</p></div><span class="pill">${review.length} odprtih</span></div><div class="card-body table-wrap">${modernTransactionsTable(review)}</div></section>`
+    : "";
+  return `${reviewCard}
+  <section class="grid metrics"${review.length ? ` style="margin-top:18px"` : ""}>
     ${countCard("Za pregled", review.length, "potrebuje ročno odločitev", "warning")}
     ${countCard("Uvoženo", state.transactions.length, "vse transakcije", "positive")}
     ${countCard("Transferji", state.transactions.filter((t) => t.status === "interni transfer").length, "ne vplivajo na porabo", "warning")}
   </section>
   ${recurringTransactionsView()}
-  <section class="grid two-col" style="margin-top:18px">
-    <div class="card"><div class="card-header"><h3>Za pregled</h3><span class="pill">${review.length} odprtih</span></div><div class="card-body table-wrap">${modernTransactionsTable(review)}</div></div>
-    <div class="card"><div class="card-header"><h3>Vse transakcije</h3></div><div class="card-body table-wrap">${modernTransactionsTable(ready)}</div></div>
-  </section>`;
+  <section class="card" style="margin-top:18px"><div class="card-header"><h3>Vse transakcije</h3></div><div class="card-body table-wrap">${modernTransactionsTable(ready)}</div></section>`;
 }
 
 function recurringTransactionsView() {
