@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "95";
+const APP_VERSION = "97";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -2501,7 +2501,7 @@ function upsert(collection, values) {
     clean.history = nextHistoryEntries(collection, original, clean);
   }
   if (clean.id) {
-    replaceRecordById(collection, clean.id, clean);
+    replaceRecordById(collection, clean.id, { ...(original || {}), ...clean });
   } else {
     state[collection] = [{ id: crypto.randomUUID(), ...clean }, ...state[collection]];
   }
@@ -2796,12 +2796,14 @@ function repairMissingIncomeBalances() {
   let totalAmount = 0;
   let unmatched = 0;
   const touchedPeriods = new Map();
+  // Links only: live balances are typically set manually (Setup) after these incomes and already include them.
   for (const income of affected) {
-    const updated = applyIncomeBalance(income);
-    if (!updated.balanceAccountId) {
+    const account = findExpenseAccount(income.account || income.source);
+    if (!account) {
       unmatched += 1;
       continue;
     }
+    const updated = { ...income, balanceAccountId: account.id, balanceImpact: Math.abs(Number(income.amount || 0)) };
     replaceRecordById("incomes", income.id, updated);
     fixed += 1;
     totalAmount += Number(updated.balanceImpact || 0);
@@ -3622,6 +3624,96 @@ function unusualExpenses(today = iso(currentYear, currentMonth, now.getDate())) 
     .sort((a, b) => b.expense.date.localeCompare(a.expense.date));
 }
 
+const SUBSCRIPTION_IGNORED_CATEGORIES = new Set(["interni transfer", "za pregled", "investicije", "gotovina"]);
+
+function subscriptionMerchantKey(name) {
+  return normalizeText(name)
+    .replace(/^vi[-\s]+/, "")
+    .split(",")[0]
+    .replace(/\d+/g, " ")
+    .replace(/[^a-z*&.\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function daysBetween(fromDate, toDate) {
+  return Math.round((new Date(`${toDate}T00:00:00`) - new Date(`${fromDate}T00:00:00`)) / 86400000);
+}
+
+const chargeAmount = (charge) => Math.abs(Number(charge.amount || 0));
+
+function clusterChargesByAmount(charges) {
+  const clusters = [];
+  charges.forEach((charge) => {
+    const amount = chargeAmount(charge);
+    const cluster = clusters.find((items) => Math.abs(chargeAmount(items[items.length - 1]) - amount) <= amount * 0.25);
+    if (cluster) cluster.push(charge);
+    else clusters.push([charge]);
+  });
+  return clusters;
+}
+
+// One charge per month, at least 3 months, ~monthly gaps, and all amounts but one within 25 % of the median
+// (the exception covers a prorated first month or a single price change).
+function subscriptionFromCharges(sorted, today) {
+  const months = new Set(sorted.map((charge) => charge.date.slice(0, 7)));
+  if (sorted.length < 3 || months.size !== sorted.length) return null;
+  const gaps = sorted.slice(1).map((charge, index) => daysBetween(sorted[index].date, charge.date));
+  if (gaps.some((gap) => gap < 20 || gap > 45)) return null;
+  const amounts = sorted.map(chargeAmount);
+  const typical = median(amounts);
+  if (typical <= 0 || amounts.filter((amount) => Math.abs(amount - typical) > typical * 0.25).length > 1) return null;
+  const last = sorted[sorted.length - 1];
+  const lastAmount = chargeAmount(last);
+  const previousAmount = chargeAmount(sorted[sorted.length - 2]);
+  const nextDate = shiftIsoDate(last.date, Math.round(median(gaps)));
+  return {
+    name: last.name,
+    category: last.category,
+    amount: lastAmount,
+    count: sorted.length,
+    firstDate: sorted[0].date,
+    lastDate: last.date,
+    nextDate,
+    active: daysBetween(nextDate, today) <= 10,
+    previousAmount: Math.abs(lastAmount - previousAmount) >= 0.01 ? previousAmount : null,
+  };
+}
+
+function detectSubscriptions(today = iso(currentYear, currentMonth, now.getDate())) {
+  const since = shiftIsoDate(today, -400);
+  const groups = new Map();
+  (state.expenses || [])
+    .filter((expense) => expense.date >= since && expense.date <= today && !SUBSCRIPTION_IGNORED_CATEGORIES.has(expense.category))
+    .forEach((expense) => {
+      const key = subscriptionMerchantKey(expense.name);
+      if (key.length < 3) return;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(expense);
+    });
+  return [...groups.values()]
+    .flatMap((charges) => {
+      const sorted = [...charges].sort((a, b) => a.date.localeCompare(b.date));
+      const monthCount = new Set(sorted.map((charge) => charge.date.slice(0, 7))).size;
+      const candidates = monthCount === sorted.length ? [sorted] : clusterChargesByAmount(sorted);
+      return candidates.map((candidate) => subscriptionFromCharges(candidate, today));
+    })
+    .filter(Boolean)
+    .sort((a, b) => Number(b.active) - Number(a.active) || b.amount - a.amount);
+}
+
+function subscriptionsHtml() {
+  const subscriptions = detectSubscriptions();
+  if (!subscriptions.length) return `<div class="empty">Ni zaznanih naročnin. Naročnina se pokaže, ko je isti trgovec bremenil vsaj 3 mesece zapored s podobnim zneskom.</div>`;
+  const active = subscriptions.filter((item) => item.active);
+  const monthly = active.reduce((total, item) => total + item.amount, 0);
+  return `<div class="subscription-summary"><div><span>Aktivne naročnine</span><strong>${active.length}</strong></div><div><span>Mesečno</span><strong>${money(monthly)}</strong></div><div><span>Letno</span><strong>${money(monthly * 12)}</strong></div></div>
+    <div class="subscription-list">${subscriptions.map((item) => `<div class="subscription-row${item.active ? "" : " is-inactive"}">
+      <div><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.category || "")} · ${item.count}× od ${escapeHtml(item.firstDate)}${item.previousAmount !== null ? ` · <span class="subscription-change">prej ${money(item.previousAmount)}</span>` : ""}</small></div>
+      <div class="subscription-meta"><strong>${money(item.amount)}</strong><small>${item.active ? `naslednje ~${escapeHtml(item.nextDate)}` : `izostalo (pričakovano ${escapeHtml(item.nextDate)})`}</small></div>
+    </div>`).join("")}</div>`;
+}
+
 function markExpenseOneOff(id) {
   const expense = (state.expenses || []).find((item) => item.id === id);
   if (!expense) return;
@@ -4074,6 +4166,10 @@ function analyticsView() {
   <section class="card" style="margin-top:14px">
     <div class="card-header"><h3>Priložnosti za zmanjšanje porabe</h3><span class="pill">${completedMonths.length >= 3 ? "zadnji 3 zaključeni meseci" : "potrebni so 3 meseci"}</span></div>
     <div class="card-body">${spendingRecommendationsHtml()}</div>
+  </section>
+  <section class="card" style="margin-top:14px">
+    <div class="card-header"><div><h3>Zaznane naročnine</h3><p>Samodejno prepoznana mesečna plačila. Samo informativno.</p></div></div>
+    <div class="card-body">${subscriptionsHtml()}</div>
   </section>
   <section class="grid two-col" style="margin-top:14px">
     <div class="card"><div class="card-header"><h3>Primerjava s povprečjem</h3></div><div class="card-body">${monthComparisonHtml()}</div></div>
@@ -5710,7 +5806,8 @@ function settingsDataView() {
       ${localBackupButton}
       <label class="button secondary">Uvozi JSON<input type="file" accept="application/json" data-action="import-json" hidden></label>
       <button class="button secondary" data-nav="setup">Odpri začetni setup</button>
-      ${currentProfile.role === "admin" ? `<button class="button secondary" data-action="repair-income-balances">Popravi manjkajoča stanja prihodkov</button>` : ""}
+      ${currentProfile.role === "admin" ? `<button class="button secondary" data-action="repair-income-balances">Poveži prihodke brez računa</button>` : ""}
+      ${currentProfile.role === "admin" && (state.monthClosures || []).length ? `<button class="button secondary" data-action="rebuild-all-closures">Preračunaj vse zaključene mesece</button>` : ""}
       ${currentProfile.role === "admin" ? `<button class="button secondary" data-action="relink-account-references">Popravi povezave na stare račune</button>` : ""}
       <button class="button danger ghost" data-action="clear">Izbriši vse podatke</button>
     </div>
@@ -6813,13 +6910,24 @@ function bind() {
   }));
   document.querySelectorAll("[data-action='apply-category-migration']").forEach((btn) => btn.addEventListener("click", applyCategoryMigration));
   document.querySelectorAll("[data-action='repair-income-balances']").forEach((btn) => btn.addEventListener("click", () => {
-    if (!confirm("Popravim stanja računov za prihodke, ki niso bili upoštevani (npr. napačno uvoženi iz bančnega izpiska)? Pred popravilom bo ustvarjena varnostna kopija.")) return;
+    if (!confirm("Povežem prihodke brez računa z ustreznim računom? To popravi izračun preteklih mesecev. Trenutna stanja računov se NE spremenijo - če stanje ni pravilno, ga uredi ročno. Pred popravilom bo ustvarjena varnostna kopija.")) return;
     const result = repairMissingIncomeBalances();
     if (result.fixed === 0 && result.unmatched === 0) {
-      alert("Ni bilo najdenih prihodkov z manjkajočim stanjem računa.");
+      alert("Ni bilo najdenih prihodkov brez povezanega računa.");
       return;
     }
-    alert(`Popravljenih prihodkov: ${result.fixed} (skupaj ${result.totalAmount.toFixed(2)} €).${result.refreshedMonths ? ` Osvežena analitika za ${result.refreshedMonths} zaključenih mesecev.` : ""}${result.unmatched ? ` Opozorilo: pri ${result.unmatched} prihodkih računa ni bilo mogoče samodejno prepoznati, preveri jih ročno.` : ""}`);
+    alert(`Povezanih prihodkov: ${result.fixed} (skupaj ${result.totalAmount.toFixed(2)} €). Stanja računov niso bila spremenjena.${result.refreshedMonths ? ` Osvežena analitika za ${result.refreshedMonths} zaključenih mesecev.` : ""}${result.unmatched ? ` Opozorilo: pri ${result.unmatched} prihodkih računa ni bilo mogoče samodejno prepoznati, preveri jih ročno.` : ""}`);
+  }));
+  document.querySelectorAll("[data-action='rebuild-all-closures']").forEach((btn) => btn.addEventListener("click", () => {
+    const closures = state.monthClosures || [];
+    if (!confirm(`Ponovno izračunam vseh ${closures.length} zaključenih mesecev iz trenutnih podatkov? Uporabi to po ročnem popravku stanja računa. Pred tem bo ustvarjena varnostna kopija.`)) return;
+    refreshClosedMonthsAfterCorrection(
+      closures.map((closure) => ({ month: Number(closure.month), year: Number(closure.year), key: `${closure.year}-${pad(Number(closure.month))}` })),
+      "Ročni preračun vseh zaključenih mesecev"
+    );
+    save();
+    render();
+    alert(`Ponovno izračunanih zaključenih mesecev: ${closures.length}.`);
   }));
   document.querySelectorAll("[data-action='relink-account-references']").forEach((btn) => btn.addEventListener("click", () => {
     if (!confirm("Popravim povezave starih stroškov/prihodkov/prenosov na trenutne račune (npr. po ponovnem zagonu Setup-a so dobili nove ID-je)? To tudi ponovno izračuna vse zaključene mesece. Pred popravilom bo ustvarjena varnostna kopija.")) return;

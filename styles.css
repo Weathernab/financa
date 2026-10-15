@@ -2040,6 +2040,65 @@ button:disabled {
   border-color: color-mix(in srgb, var(--warning) 45%, transparent);
 }
 
+.subscription-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.subscription-summary div {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.subscription-summary span,
+.subscription-row small {
+  display: block;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.subscription-summary strong {
+  display: block;
+  margin-top: 2px;
+  font-size: 1.1rem;
+}
+
+.subscription-list {
+  display: grid;
+  gap: 8px;
+}
+
+.subscription-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.subscription-row > div:first-child {
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.subscription-meta {
+  flex-shrink: 0;
+  text-align: right;
+}
+
+.subscription-row.is-inactive {
+  opacity: 0.6;
+}
+
+.subscription-change {
+  color: var(--warning);
+}
+
 .status-pill {
   margin-left: 6px;
   color: var(--warning);
@@ -2074,6 +2133,20 @@ button:disabled {
 }
 
 @media (max-width: 720px) {
+  .subscription-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .subscription-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 10px;
+    text-align: left;
+  }
+
   .unusual-row {
     grid-template-columns: minmax(0, 1fr) auto;
   }
