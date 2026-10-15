@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "94";
+const APP_VERSION = "95";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -3400,11 +3400,11 @@ function dashboardView() {
         <div class="card-body">${donutChart(groupByCategoryGroup(data.expenses))}</div>
       </div>
     </section>
-    <section class="dashboard-widgets" style="margin-top:14px">
+    <section class="dashboard-widgets${hasRecurringRules() ? "" : " three"}" style="margin-top:14px">
       <div class="card dashboard-link" data-nav="accounts"><div class="card-header"><h3>Računi</h3></div><div class="card-body">${bars(liquidAccounts.map((a) => [a.name, a.balance]))}</div></div>
       <div class="card dashboard-link" data-nav="liabilities"><div class="card-header"><h3>Obveznosti v 30 dneh</h3></div><div class="card-body">${upcomingHtml()}</div></div>
       <div class="card dashboard-link" data-nav="goals"><div class="card-header"><h3>Cilji</h3></div><div class="card-body">${goalSummary()}</div></div>
-      <div class="card dashboard-link" data-nav="transactions"><div class="card-header"><h3>Pričakovani vnosi</h3><span class="pill">${missingRecurringTransactions().length}</span></div><div class="card-body">${recurringAlertsHtml()}</div></div>
+      ${hasRecurringRules() ? `<div class="card dashboard-link" data-nav="transactions"><div class="card-header"><h3>Pričakovani vnosi</h3><span class="pill">${missingRecurringTransactions().length}</span></div><div class="card-body">${recurringAlertsHtml()}</div></div>` : ""}
     </section>
     <section class="card" style="margin-top:18px"><div class="card-header"><h3>Nedavne transakcije</h3><button class="button secondary" data-nav="transactions">Prikaži vse</button></div><div class="card-body table-wrap">${modernTransactionsTable(recentTransactions(6))}</div></section>
   `;
@@ -3497,8 +3497,12 @@ function transactionsView() {
     ${countCard("Uvoženo", state.transactions.length, "vse transakcije", "positive")}
     ${countCard("Transferji", state.transactions.filter((t) => t.status === "interni transfer").length, "ne vplivajo na porabo", "warning")}
   </section>
-  ${recurringTransactionsView()}
+  ${hasRecurringRules() ? recurringTransactionsView() : ""}
   <section class="card" style="margin-top:18px"><div class="card-header"><h3>Vse transakcije</h3></div><div class="card-body table-wrap">${modernTransactionsTable(ready)}</div></section>`;
+}
+
+function hasRecurringRules() {
+  return (state.recurringTransactions || []).length > 0;
 }
 
 function recurringTransactionsView() {
@@ -3656,9 +3660,9 @@ function recentTransactions(limit = 10) {
 
 function modernTransactionsTable(rows) {
   if (!rows.length) return `<div class="empty">Ni transakcij.</div>`;
-  return `<table><thead><tr><th>Ime</th><th>Znesek</th><th>Datum</th><th>Skupina</th><th>Kategorija</th><th>Račun</th><th>Status</th><th></th></tr></thead><tbody>
+  return `<table><thead><tr><th>Ime</th><th>Znesek</th><th>Datum</th><th>Skupina</th><th>Kategorija</th><th>Račun</th><th></th></tr></thead><tbody>
     ${rows.map((tx) => `<tr class="${tx.status === "za pregled" ? "review-row" : ""}">
-      <td>${escapeHtml(tx.description || "")}<br><small class="muted">${escapeHtml(tx.source || "")} ${tx.confidence ? "· " + (confidenceLevels[tx.confidence] || tx.confidence) : ""}</small></td>
+      <td>${escapeHtml(tx.description || "")}${tx.status && !["pripravljeno", "za pregled"].includes(tx.status) ? ` <span class="pill status-pill">${escapeHtml(tx.status)}</span>` : ""}<br><small class="muted">${escapeHtml(tx.source || "")} ${tx.confidence ? "· " + (confidenceLevels[tx.confidence] || tx.confidence) : ""}</small></td>
       <td><strong class="${Number(tx.amount) < 0 ? "negative" : "positive"}">${money(Number(tx.amount || 0))}</strong></td>
       <td>${escapeHtml(tx.date || "")}</td>
       <td>${escapeHtml(tx.categoryGroup || categoryGroupFor(tx.category))}</td>
@@ -3666,7 +3670,6 @@ function modernTransactionsTable(rows) {
         ? `<span class="pill confidence-${tx.confidence || "low"}">${confidenceLevels[tx.confidence] || "Nejasno"}</span><br><select data-review-category="${escapeAttr(tx.id)}">${importCategories.map((c) => option(c, tx.category)).join("")}</select>`
         : `<span class="pill">${escapeHtml(tx.category || "za pregled")}</span>${tx.subcategory ? `<br><small class="muted">${escapeHtml(tx.subcategory)}</small>` : ""}`}</td>
       <td>${escapeHtml(tx.account || "")}</td>
-      <td>${escapeHtml(tx.status || "")}</td>
       <td>${rowActionMenu("transactions", tx.id, { allowRule: !tx.transferManaged, allowDuplicate: true, allowRecurring: !tx.transferManaged })}</td>
     </tr>`).join("")}
   </tbody></table>`;
@@ -6093,6 +6096,30 @@ function recordedActivityMonths(limit = 6) {
     });
 }
 
+const MODAL_SUBJECTS = {
+  incomes: "prihodek",
+  expenses: "strošek",
+  transactions: "transakcijo",
+  transfers: "prenos",
+  accounts: "račun",
+  investments: "investicijo",
+  liabilities: "obveznost",
+  taxes: "davek",
+  goals: "cilj",
+  snapshots: "snapshot",
+  monthlyNotes: "mesečno opombo",
+  categoryRules: "pravilo kategorije",
+  budgets: "budget",
+  recurringTransactions: "ponavljajoči vnos",
+  analysisTargets: "ciljni delež",
+};
+
+function modalTitle() {
+  const subject = MODAL_SUBJECTS[modal.collection];
+  if (!subject) return `${modal.item ? "Uredi" : "Dodaj"}: ${modal.title}`;
+  return `${modal.item ? "Uredi" : "Dodaj"} ${subject}`;
+}
+
 function modalHtml() {
   if (modal.collection === "deleteProfile") return deleteProfileModalHtml();
   if (modal.collection === "closeMonth") return closeMonthModalHtml();
@@ -6100,7 +6127,7 @@ function modalHtml() {
   const current = modal.item || defaults(modal.collection);
   return `<div class="modal-backdrop">
     <form class="modal" data-form="${modal.collection}">
-      <div class="modal-head"><h3>${modal.item ? "Uredi" : "Dodaj"}: ${modal.title}</h3><button type="button" class="icon-btn" data-action="close">X</button></div>
+      <div class="modal-head"><h3>${escapeHtml(modalTitle())}</h3><button type="button" class="icon-btn" data-action="close">X</button></div>
       <div class="modal-body form-grid">
         <input type="hidden" name="id" value="${current.id || ""}">
         ${fields[modal.collection].map(([name, type, label, options]) => fieldHtml(name, type, label, current[name], options)).join("")}
