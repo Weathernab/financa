@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "85";
+const APP_VERSION = "90";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -97,6 +97,7 @@ const fields = {
     ["subcategory", "text", "Podkategorija"],
     ["account", "account-select", "Račun"],
     ["kind", "select", "Vrsta", ["fiksen", "variabilen", "enkratni večji"]],
+    ["linkedLiabilityId", "liability-id-select", "Poveži z obveznostjo (zmanjša dolg)"],
     ["note", "textarea", "Opomba"],
   ],
   transactions: [
@@ -654,6 +655,7 @@ async function loginWithKey(key) {
     applyThemeAttribute();
     render();
     if (isLizaProfile()) triggerHeartBurst();
+    if (isTilenProfile()) triggerTankBattle();
     initializeGoogleSheetsSync();
   } catch (error) {
     authMessage = String(error?.message || "Ključ ni pravilen.")
@@ -999,6 +1001,10 @@ function isLizaProfile(profile = currentProfile) {
   return normalizeText(profile?.name) === "liza";
 }
 
+function isTilenProfile(profile = currentProfile) {
+  return normalizeText(profile?.name) === "tilen";
+}
+
 function applyThemeAttribute() {
   const theme = isLizaProfile() ? "liza" : (state.settings.theme || "dark");
   document.documentElement.dataset.theme = theme;
@@ -1021,6 +1027,268 @@ function triggerHeartBurst() {
   }
   document.body.appendChild(layer);
   setTimeout(() => layer.remove(), 5000);
+}
+
+function tankSvg(id) {
+  const wheels = [30, 54, 78, 102, 126, 150, 174].map((cx) => `
+    <g class="tank-wheel">
+      <circle cx="${cx}" cy="87" r="10" fill="#4b513e" stroke="#1b1e15" stroke-width="2"/>
+      <line x1="${cx - 7}" y1="87" x2="${cx + 7}" y2="87" stroke="#2b2f22" stroke-width="2"/>
+      <line x1="${cx}" y1="80" x2="${cx}" y2="94" stroke="#2b2f22" stroke-width="2"/>
+      <circle cx="${cx}" cy="87" r="3.5" fill="#2b2f22"/>
+    </g>`).join("");
+  return `
+    <svg class="tank-svg" viewBox="0 0 220 110" aria-hidden="true">
+      <defs>
+        <linearGradient id="${id}-hull" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#7d8f55"/><stop offset="0.55" stop-color="#56683a"/><stop offset="1" stop-color="#36431f"/>
+        </linearGradient>
+        <linearGradient id="${id}-turret" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#8a9c60"/><stop offset="1" stop-color="#4a5a30"/>
+        </linearGradient>
+        <linearGradient id="${id}-barrel" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#6a7a48"/><stop offset="0.5" stop-color="#3c4728"/><stop offset="1" stop-color="#262d18"/>
+        </linearGradient>
+      </defs>
+      <ellipse cx="102" cy="104" rx="100" ry="5" fill="rgba(0,0,0,0.45)"/>
+      <line class="tank-antenna" x1="76" y1="30" x2="64" y2="0" stroke="#2a3119" stroke-width="1.6" stroke-linecap="round"/>
+      <g class="tank-barrel">
+        <rect x="138" y="37" width="70" height="7" rx="2" fill="url(#${id}-barrel)"/>
+        <rect x="172" y="35.5" width="11" height="10" rx="2.5" fill="#3a4527"/>
+        <rect class="tank-muzzle" x="204" y="34.5" width="12" height="12" rx="2" fill="#2c3420"/>
+      </g>
+      <path d="M60 54 L72 32 Q76 26 86 26 L126 26 Q134 26 140 32 L150 46 L152 54 Z" fill="url(#${id}-turret)" stroke="#2c3519"/>
+      <ellipse cx="96" cy="42" rx="14" ry="5" fill="#4d5e31" opacity="0.7"/>
+      <ellipse cx="128" cy="36" rx="7" ry="3" fill="#3f4d27" opacity="0.7"/>
+      <rect x="88" y="19" width="18" height="8" rx="3" fill="#5f7240" stroke="#2c3519"/>
+      <path d="M6 72 L22 52 L178 52 L204 64 L196 78 L12 78 Z" fill="url(#${id}-hull)" stroke="#2c3519"/>
+      <ellipse cx="60" cy="62" rx="16" ry="5" fill="#3f4d27" opacity="0.6"/>
+      <ellipse cx="150" cy="60" rx="12" ry="4" fill="#3f4d27" opacity="0.6"/>
+      <rect x="16" y="71" width="176" height="7" rx="2" fill="#4a5a30" stroke="#2c3519"/>
+      <rect x="12" y="76" width="182" height="24" rx="12" fill="#23271c"/>
+      <rect class="tank-tread" x="12" y="76" width="182" height="24" rx="12" fill="none" stroke="#454a38" stroke-width="3" stroke-dasharray="4 3"/>
+      ${wheels}
+    </svg>`;
+}
+
+function triggerTankBattle() {
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+  document.querySelectorAll(".tank-battle").forEach((node) => node.remove());
+
+  const rand = (min, max) => min + Math.random() * (max - min);
+  const layer = document.createElement("div");
+  layer.className = "tank-battle";
+  layer.innerHTML = `
+    <div class="tank tank-left"><div class="tank-drive"><div class="tank-jolt">${tankSvg("tank-l")}</div></div></div>
+    <div class="tank tank-right"><div class="tank-drive"><div class="tank-jolt">${tankSvg("tank-r")}</div></div></div>
+  `;
+  document.body.appendChild(layer);
+
+  const left = layer.querySelector(".tank-left");
+  const right = layer.querySelector(".tank-right");
+  const timers = [];
+  const intervals = [];
+  const later = (ms, fn) => timers.push(setTimeout(fn, ms));
+
+  const fx = (cls, x, y, size, keyframes, options) => {
+    const el = document.createElement("div");
+    el.className = `tank-fx ${cls}`;
+    el.style.width = `${size}px`;
+    el.style.height = `${size}px`;
+    el.style.left = `${x - size / 2}px`;
+    el.style.top = `${y - size / 2}px`;
+    layer.appendChild(el);
+    el.animate(keyframes, { fill: "both", ...options }).onfinish = () => el.remove();
+    return el;
+  };
+
+  const ballistic = (vx, vy, gravity, duration, spin) => {
+    const steps = 12;
+    return Array.from({ length: steps + 1 }, (_, i) => {
+      const t = (i / steps) * (duration / 1000);
+      return {
+        offset: i / steps,
+        opacity: i === steps ? 0 : 1,
+        transform: `translate(${vx * t}px, ${vy * t + 0.5 * gravity * t * t}px) rotate(${(spin * i) / steps}deg)`,
+      };
+    });
+  };
+
+  const tankWidth = () => left.getBoundingClientRect().width;
+  const isLeft = (tank) => tank === left;
+
+  const dust = (tank, count = 1) => {
+    const rect = tank.querySelector(".tank-svg").getBoundingClientRect();
+    const dir = isLeft(tank) ? 1 : -1;
+    const x = isLeft(tank) ? rect.left + rect.width * 0.08 : rect.right - rect.width * 0.08;
+    for (let i = 0; i < count; i++) {
+      const size = rand(0.12, 0.22) * rect.width;
+      fx("tank-dust", x + rand(-8, 8), rect.bottom - 6, size, [
+        { transform: "translate(0, 0) scale(0.4)", opacity: 0.8 },
+        { transform: `translate(${-dir * rand(20, 60)}px, ${-rand(10, 35)}px) scale(1.6)`, opacity: 0 },
+      ], { duration: rand(700, 1100), easing: "ease-out" });
+    }
+  };
+
+  const smokePuff = (x, y, size, driftX, rise, duration, delay = 0) => fx("tank-smoke", x, y, size, [
+    { transform: "translate(0, 0) scale(0.35)", opacity: 0 },
+    { transform: `translate(${driftX * 0.3}px, ${-rise * 0.25}px) scale(0.9)`, opacity: 0.8, offset: 0.2 },
+    { transform: `translate(${driftX}px, ${-rise}px) scale(1.9)`, opacity: 0 },
+  ], { duration, delay, easing: "ease-out" });
+
+  const explode = (x, y) => {
+    const w = tankWidth();
+    fx("tank-flash", x, y, w * 0.95, [
+      { transform: "scale(0.15)", opacity: 1 },
+      { transform: "scale(1)", opacity: 1, offset: 0.25 },
+      { transform: "scale(1.35)", opacity: 0 },
+    ], { duration: 550, easing: "ease-out" });
+    for (let i = 0; i < 7; i++) {
+      fx("tank-fire", x + rand(-0.15, 0.15) * w, y + rand(-0.1, 0.08) * w, rand(0.25, 0.45) * w, [
+        { transform: "translate(0, 0) scale(0.2)", opacity: 1 },
+        { transform: `translate(${rand(-15, 15)}px, ${-rand(10, 25)}px) scale(1)`, opacity: 1, offset: 0.35 },
+        { transform: `translate(${rand(-25, 25)}px, ${-rand(30, 60)}px) scale(1.3)`, opacity: 0 },
+      ], { duration: rand(650, 1000), delay: i * 40, easing: "ease-out" });
+    }
+    for (let i = 0; i < 18; i++) {
+      const angle = rand(-165, -15) * (Math.PI / 180);
+      const speed = rand(220, 560);
+      const duration = rand(900, 1400);
+      const piece = fx("tank-debris", x, y, rand(3, 8), ballistic(Math.cos(angle) * speed, Math.sin(angle) * speed, 1100, duration, rand(-900, 900)), { duration, easing: "linear" });
+      piece.style.background = ["#ffcf5a", "#ff8a1e", "#2b2f22", "#4b513e", "#ffe9a8"][i % 5];
+    }
+    for (let i = 0; i < 9; i++) {
+      smokePuff(x + rand(-0.15, 0.15) * w, y - rand(0, 0.1) * w, rand(0.3, 0.55) * w, rand(-40, 40), rand(90, 180), rand(1800, 2600), 150 + i * 70);
+    }
+    layer.animate([
+      { transform: "translate(0, 0)" },
+      { transform: "translate(9px, -6px)" },
+      { transform: "translate(-8px, 5px)" },
+      { transform: "translate(6px, 3px)" },
+      { transform: "translate(-4px, -3px)" },
+      { transform: "translate(2px, 1px)" },
+      { transform: "translate(0, 0)" },
+    ], { duration: 450, easing: "ease-out" });
+  };
+
+  const hit = (tank) => {
+    const svg = tank.querySelector(".tank-svg");
+    tank.querySelector(".tank-jolt").animate([
+      { transform: "none" },
+      { transform: "translateX(-10px) rotate(3deg)", offset: 0.12 },
+      { transform: "translateX(6px) rotate(-1.5deg)", offset: 0.35 },
+      { transform: "translateX(-3px) rotate(0.8deg)", offset: 0.6 },
+      { transform: "none" },
+    ], { duration: 600, easing: "ease-out" });
+    svg.animate([
+      { filter: "brightness(2.6) saturate(0.3)" },
+      { filter: "brightness(0.7) saturate(0.6)" },
+    ], { duration: 700, fill: "forwards" });
+    intervals.push(setInterval(() => {
+      const rect = svg.getBoundingClientRect();
+      const x = rect.left + rect.width * rand(0.35, 0.6);
+      smokePuff(x, rect.top + rect.height * 0.35, rand(0.15, 0.28) * rect.width, rand(-20, 20), rand(80, 150), rand(1400, 2000));
+      if (Math.random() < 0.6) {
+        fx("tank-fire", x, rect.top + rect.height * 0.45, rand(0.06, 0.12) * rect.width, [
+          { transform: "scale(0.4)", opacity: 0.95 },
+          { transform: `translate(${rand(-6, 6)}px, ${-rand(12, 28)}px) scale(1)`, opacity: 0 },
+        ], { duration: rand(400, 700), easing: "ease-out" });
+      }
+    }, 170));
+  };
+
+  const fire = (shooter, target) => {
+    const dir = isLeft(shooter) ? 1 : -1;
+    const muzzle = shooter.querySelector(".tank-muzzle").getBoundingClientRect();
+    const mx = dir > 0 ? muzzle.right : muzzle.left;
+    const my = muzzle.top + muzzle.height / 2;
+    const w = tankWidth();
+
+    shooter.querySelector(".tank-barrel").animate([
+      { transform: "translateX(0)" },
+      { transform: "translateX(-16px)", offset: 0.1 },
+      { transform: "translateX(0)" },
+    ], { duration: 750, easing: "ease-out" });
+    shooter.querySelector(".tank-jolt").animate([
+      { transform: "none" },
+      { transform: "translateX(-8px) rotate(-2.2deg)", offset: 0.14 },
+      { transform: "translateX(2px) rotate(0.7deg)", offset: 0.5 },
+      { transform: "none" },
+    ], { duration: 700, easing: "ease-out" });
+    shooter.querySelector(".tank-antenna").animate([
+      { transform: "rotate(0)" },
+      { transform: "rotate(14deg)", offset: 0.15 },
+      { transform: "rotate(-9deg)", offset: 0.35 },
+      { transform: "rotate(5deg)", offset: 0.55 },
+      { transform: "rotate(-2deg)", offset: 0.75 },
+      { transform: "rotate(0)" },
+    ], { duration: 1100, easing: "ease-out" });
+
+    fx("tank-flash", mx + dir * w * 0.08, my, w * 0.32, [
+      { transform: "scale(0.2)", opacity: 1 },
+      { transform: "scale(1.1)", opacity: 1, offset: 0.3 },
+      { transform: "scale(1.3)", opacity: 0 },
+    ], { duration: 220, easing: "ease-out" });
+    for (let i = 0; i < 6; i++) {
+      smokePuff(mx + dir * rand(0, 20), my, rand(0.1, 0.2) * w, dir * rand(30, 110), rand(20, 60), rand(1000, 1500), i * 30);
+    }
+    dust(shooter, 3);
+
+    const targetRect = target.querySelector(".tank-svg").getBoundingClientRect();
+    const tx = targetRect.left + targetRect.width * rand(0.42, 0.58);
+    const ty = targetRect.top + targetRect.height * 0.55;
+    const dx = tx - mx;
+    const dy = ty - my;
+    const arc = Math.abs(dx) * 0.07;
+    const steps = 16;
+    const frames = Array.from({ length: steps + 1 }, (_, i) => {
+      const p = i / steps;
+      const angle = Math.atan2(dy - 4 * arc * (1 - 2 * p), dx) * (180 / Math.PI);
+      return {
+        offset: p,
+        transform: `translate(${mx + dx * p}px, ${my + dy * p - 4 * arc * p * (1 - p)}px) rotate(${angle}deg)`,
+      };
+    });
+    const shell = document.createElement("div");
+    shell.className = "tank-shell";
+    layer.appendChild(shell);
+    shell.animate(frames, { duration: Math.min(700, Math.max(380, Math.abs(dx) / 1.6)), easing: "linear", fill: "forwards" }).onfinish = () => {
+      shell.remove();
+      explode(tx, ty);
+      hit(target);
+    };
+  };
+
+  layer.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 250, fill: "forwards" });
+  [left, right].forEach((tank) => {
+    tank.querySelector(".tank-drive").animate([
+      { transform: "translateX(-140%)" },
+      { transform: "translateX(0)" },
+    ], { duration: 1300, easing: "cubic-bezier(.2,.7,.3,1)", fill: "backwards" });
+    tank.querySelector(".tank-jolt").animate([
+      { transform: "translateY(0)" },
+      { transform: "translateY(-1.5px) rotate(-0.4deg)" },
+      { transform: "translateY(0)" },
+    ], { duration: 220, iterations: 6 });
+    tank.querySelectorAll(".tank-wheel").forEach((wheel) => wheel.animate([
+      { transform: "rotate(0)" },
+      { transform: "rotate(900deg)" },
+    ], { duration: 1300, easing: "cubic-bezier(.2,.7,.3,1)" }));
+    tank.querySelector(".tank-tread").animate([
+      { strokeDashoffset: 0 },
+      { strokeDashoffset: -160 },
+    ], { duration: 1300, easing: "cubic-bezier(.2,.7,.3,1)" });
+  });
+  [80, 330, 600, 900].forEach((ms) => later(ms, () => { dust(left, 2); dust(right, 2); }));
+
+  later(1500, () => fire(left, right));
+  later(3000, () => fire(right, left));
+  later(5200, () => layer.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 800, fill: "forwards" }));
+  later(6050, () => {
+    timers.forEach(clearTimeout);
+    intervals.forEach(clearInterval);
+    layer.remove();
+  });
 }
 
 let miniHeartThrottle = 0;
@@ -1725,6 +1993,67 @@ function latestSnapshotBefore(month, year) {
     .sort((a, b) => Number(b.year) * 12 + Number(b.month) - (Number(a.year) * 12 + Number(a.month)))[0];
 }
 
+function historicalEntryAsOf(history, cutoffDate) {
+  if (!Array.isArray(history) || !history.length) return undefined;
+  const applicable = history.filter((entry) => entry.date <= cutoffDate);
+  if (!applicable.length) return null; // history exists but starts after cutoff - didn't exist yet
+  return applicable.reduce((latest, entry) => (entry.date >= latest.date ? entry : latest));
+}
+
+function reconstructLiabilitiesAsOf(cutoffDate) {
+  return (state.liabilities || [])
+    .map((item) => {
+      const entry = historicalEntryAsOf(item.history, cutoffDate);
+      if (entry === undefined) return item; // no history tracked yet - fall back to current (legacy record)
+      if (entry === null) return null; // didn't exist as of cutoff
+      return { ...item, amount: entry.amount, status: entry.status };
+    })
+    .filter(Boolean);
+}
+
+function reconstructInvestmentsAsOf(cutoffDate) {
+  return (state.investments || [])
+    .map((item) => {
+      const entry = historicalEntryAsOf(item.history, cutoffDate);
+      if (entry === undefined) return item;
+      if (entry === null) return null;
+      return { ...item, currentValue: entry.currentValue };
+    })
+    .filter(Boolean);
+}
+
+function reconstructAccountsAsOf(cutoffDate) {
+  const original = state.accounts;
+  state.accounts = structuredClone(original || []);
+  try {
+    (state.expenses || []).filter((item) => item.date > cutoffDate).forEach(restoreExpenseBalance);
+    (state.incomes || []).filter((item) => item.date > cutoffDate).forEach(restoreIncomeBalance);
+    (state.transactions || []).filter((item) => item.transferManaged && item.date > cutoffDate).forEach(restoreTransferBalance);
+    return state.accounts;
+  } finally {
+    state.accounts = original;
+  }
+}
+
+function reconstructNetWorthAsOf(month, year) {
+  const maxDay = new Date(Number(year), Number(month), 0).getDate();
+  const cutoff = iso(Number(year), Number(month), maxDay);
+  const reconstructedAccounts = reconstructAccountsAsOf(cutoff);
+  const reconstructedLiabilities = reconstructLiabilitiesAsOf(cutoff);
+  const reconstructedInvestments = reconstructInvestmentsAsOf(cutoff);
+  const originalAccounts = state.accounts;
+  const originalLiabilities = state.liabilities;
+  const originalInvestments = state.investments;
+  state.accounts = reconstructedAccounts;
+  state.liabilities = reconstructedLiabilities;
+  state.investments = reconstructedInvestments;
+  const breakdown = netWorthBreakdown();
+  state.accounts = originalAccounts;
+  state.liabilities = originalLiabilities;
+  state.investments = originalInvestments;
+  return { assets: breakdown.assetTotal, liabilities: breakdown.liabilityTotal, netWorth: breakdown.assetTotal - breakdown.liabilityTotal, cutoff };
+}
+
 function snapshotForMonth(month, year) {
   return (state.snapshots || []).find((item) =>
     Number(item.month) === Number(month) && Number(item.year) === Number(year)
@@ -1915,6 +2244,9 @@ function upsert(collection, values) {
     closeModal();
     return;
   }
+  if (collection === "liabilities" || collection === "investments") {
+    clean.history = nextHistoryEntries(collection, original, clean);
+  }
   if (clean.id) {
     replaceRecordById(collection, clean.id, clean);
   } else {
@@ -1922,6 +2254,60 @@ function upsert(collection, values) {
   }
   save();
   closeModal();
+}
+
+function nextHistoryEntries(collection, original, clean, entryDate = iso(currentYear, currentMonth, now.getDate())) {
+  const history = [...(original?.history || [])];
+  if (collection === "liabilities") {
+    const amount = Number(clean.amount || 0);
+    const status = clean.status || "odprto";
+    const last = history[history.length - 1];
+    if (!last || Number(last.amount) !== amount || last.status !== status) {
+      history.push({ date: entryDate, amount, status });
+    }
+    return history;
+  }
+  const currentValue = Number(clean.currentValue || 0);
+  const last = history[history.length - 1];
+  if (!last || Number(last.currentValue) !== currentValue) {
+    history.push({ date: entryDate, currentValue });
+  }
+  return history;
+}
+
+function applyLiabilityReduction(expense) {
+  if (!expense.linkedLiabilityId) return { linkedLiabilityId: "", liabilityImpact: 0 };
+  const liability = (state.liabilities || []).find((item) => item.id === expense.linkedLiabilityId);
+  if (!liability) return { linkedLiabilityId: "", liabilityImpact: 0 };
+  const impact = Math.abs(Number(expense.amount || 0));
+  const nextAmount = Math.max(0, Number(liability.amount || 0) - impact);
+  const nextStatus = nextAmount <= 0.004 ? "plačano" : liability.status;
+  const updated = {
+    ...liability,
+    amount: nextAmount,
+    status: nextStatus,
+    updatedAt: new Date().toISOString(),
+  };
+  updated.history = nextHistoryEntries("liabilities", liability, updated, expense.date);
+  replaceRecordById("liabilities", liability.id, updated);
+  return { linkedLiabilityId: liability.id, liabilityImpact: impact };
+}
+
+function restoreLiabilityReduction(expense) {
+  const impact = Number(expense?.liabilityImpact || 0);
+  if (!expense?.linkedLiabilityId || impact <= 0) return;
+  const liability = (state.liabilities || []).find((item) => item.id === expense.linkedLiabilityId);
+  if (!liability) return;
+  const restoredAmount = Number(liability.amount || 0) + impact;
+  const restoredStatus = restoredAmount > 0.004 && liability.status === "plačano" ? "odprto" : liability.status;
+  const updated = {
+    ...liability,
+    amount: restoredAmount,
+    status: restoredStatus,
+    updatedAt: new Date().toISOString(),
+  };
+  updated.history = nextHistoryEntries("liabilities", liability, updated, expense.date);
+  replaceRecordById("liabilities", liability.id, updated);
 }
 
 function replaceRecordById(collection, id, replacement) {
@@ -2080,15 +2466,83 @@ function restoreIncomeBalance(income) {
   );
 }
 
+function relinkOrphanedAccountReferences() {
+  const validIds = new Set((state.accounts || []).map((account) => account.id));
+  let relinked = 0;
+  let unmatched = 0;
+
+  state.expenses = (state.expenses || []).map((expense) => {
+    let row = expense;
+    if (row.balanceAccountId && !validIds.has(row.balanceAccountId)) {
+      const account = findExpenseAccount(row.account);
+      if (account) {
+        row = { ...row, balanceAccountId: account.id };
+        relinked += 1;
+      } else {
+        unmatched += 1;
+      }
+    }
+    if (row.roundUpSavingsAccountId && !validIds.has(row.roundUpSavingsAccountId)) {
+      const savings = roundUpSavingsAccount();
+      if (savings) {
+        row = { ...row, roundUpSavingsAccountId: savings.id };
+        relinked += 1;
+      } else {
+        unmatched += 1;
+      }
+    }
+    return row;
+  });
+
+  state.incomes = (state.incomes || []).map((income) => {
+    if (!income.balanceAccountId || validIds.has(income.balanceAccountId)) return income;
+    const account = findExpenseAccount(income.account);
+    if (account) {
+      relinked += 1;
+      return { ...income, balanceAccountId: account.id };
+    }
+    unmatched += 1;
+    return income;
+  });
+
+  state.transactions = (state.transactions || []).map((tx) => {
+    if (!tx.transferManaged) return tx;
+    let row = tx;
+    const [fromName, toName] = String(tx.account || "").split("→").map((part) => part.trim());
+    if (row.fromAccountId && !validIds.has(row.fromAccountId)) {
+      const account = findExpenseAccount(fromName);
+      if (account) {
+        row = { ...row, fromAccountId: account.id };
+        relinked += 1;
+      } else {
+        unmatched += 1;
+      }
+    }
+    if (row.toAccountId && !validIds.has(row.toAccountId)) {
+      const account = findExpenseAccount(toName);
+      if (account) {
+        row = { ...row, toAccountId: account.id };
+        relinked += 1;
+      } else {
+        unmatched += 1;
+      }
+    }
+    return row;
+  });
+
+  return { relinked, unmatched };
+}
+
 function repairMissingIncomeBalances() {
   const affected = (state.incomes || []).filter(
     (income) => Math.abs(Number(income.amount || 0)) > 0 && !income.balanceAccountId
   );
-  if (!affected.length) return { fixed: 0, totalAmount: 0, unmatched: 0 };
+  if (!affected.length) return { fixed: 0, totalAmount: 0, unmatched: 0, refreshedMonths: 0 };
   createBackup("pred popravilom manjkajočih stanj prihodkov", state);
   let fixed = 0;
   let totalAmount = 0;
   let unmatched = 0;
+  const touchedPeriods = new Map();
   for (const income of affected) {
     const updated = applyIncomeBalance(income);
     if (!updated.balanceAccountId) {
@@ -2098,10 +2552,16 @@ function repairMissingIncomeBalances() {
     replaceRecordById("incomes", income.id, updated);
     fixed += 1;
     totalAmount += Number(updated.balanceImpact || 0);
+    const period = periodFromDate(updated.date);
+    if (period && monthClosure(period.month, period.year)) touchedPeriods.set(period.key, period);
+  }
+  const periods = [...touchedPeriods.values()];
+  if (periods.length) {
+    periods.forEach((period) => rebuildMonthClosure(period.month, period.year, "Popravilo manjkajočih stanj prihodkov"));
   }
   save();
   render();
-  return { fixed, totalAmount, unmatched };
+  return { fixed, totalAmount, unmatched, refreshedMonths: periods.length };
 }
 
 function applyIncomeBalance(income) {
@@ -2202,7 +2662,10 @@ function warnIfBalanceNotApplied(entry) {
 
 function upsertExpense(clean, syncTransaction = false, options = {}) {
   const existing = (state.expenses || []).find((item) => item.id === clean.id);
-  if (existing) restoreExpenseBalance(existing);
+  if (existing) {
+    restoreExpenseBalance(existing);
+    restoreLiabilityReduction(existing);
+  }
   let row = {
     ...(existing || {}),
     ...clean,
@@ -2211,6 +2674,8 @@ function upsertExpense(clean, syncTransaction = false, options = {}) {
     amount: Math.abs(Number(clean.amount || 0)),
     balanceAccountId: "",
     balanceImpact: 0,
+    linkedLiabilityId: clean.linkedLiabilityId || "",
+    liabilityImpact: 0,
   };
   row = withCategoryGroup(row);
 
@@ -2223,6 +2688,7 @@ function upsertExpense(clean, syncTransaction = false, options = {}) {
   }
 
   row = applyExpenseBalance(row);
+  row = { ...row, ...applyLiabilityReduction(row) };
   replaceRecordById("expenses", row.id, row);
 
   if (syncTransaction) {
@@ -2287,6 +2753,7 @@ function deleteExpenseRecord(id, removeTransaction = false) {
   const expense = (state.expenses || []).find((item) => item.id === id);
   if (!expense) return;
   restoreExpenseBalance(expense);
+  restoreLiabilityReduction(expense);
   removeRecordById("expenses", id);
   if (removeTransaction) {
     const linked = (state.transactions || []).find((item) =>
@@ -3011,7 +3478,9 @@ function monthlyView() {
   return `${filterHtml("expenses")}
     <div class="month-close-bar ${closure ? "closed" : ""}">
       <div><strong>${closure ? "Mesec je zaključen" : "Mesec še ni zaključen"}</strong><span>${closure ? `Zaključeno ${formatSyncTime(closure.closedAt)}. Analitične številke so zaklenjene.${closure.recalculatedAt ? ` Popravljeno ${formatSyncTime(closure.recalculatedAt)}.` : ""}` : "Zaključek shrani snapshot, komentar in budgete ter pripravi naslednji mesec."}</span></div>
-      ${closure ? `<span class="sync-badge success">Zaklenjeno</span>` : `<button class="button" type="button" data-action="close-month">Zaključi mesec</button>`}
+      ${closure
+        ? `<span class="sync-badge success">Zaklenjeno</span>${currentProfile.role === "admin" ? `<button class="button secondary" type="button" data-action="rebuild-month-closure">Osveži zaključek</button>` : ""}`
+        : `<button class="button" type="button" data-action="close-month">Zaključi mesec</button>`}
     </div>
     <section class="grid metrics" style="margin-top:14px">
       ${metricCard(["Prihodki", displayed.incomeTotal, monthLabel(filters.month, filters.year), "positive"])}
@@ -3095,13 +3564,14 @@ function closeMonth(values) {
   if (monthClosure(month, year)) return closeModal();
   const data = monthlyData(month, year);
   const analytics = analyticsMonthlyData(month, year, { ignoreClosure: true });
+  const reconstructed = reconstructNetWorthAsOf(month, year);
   createBackup(`pred zaključkom ${month}/${year}`, state);
   const snapshot = {
     id: snapshotForMonth(month, year)?.id || crypto.randomUUID(),
     month, year,
-    assets: data.assets,
-    liabilities: data.liabilities,
-    netWorth: data.netWorth,
+    assets: reconstructed.assets,
+    liabilities: reconstructed.liabilities,
+    netWorth: reconstructed.netWorth,
     note: `Zaključek meseca ${monthLabel(month, year)}`,
   };
   replaceOrInsertRecord("snapshots", snapshot);
@@ -3124,7 +3594,7 @@ function closeMonth(values) {
       saved: analytics.saved,
       savingsRate: analytics.savingsRate,
       invested: data.invested,
-      netWorth: data.netWorth,
+      netWorth: reconstructed.netWorth,
       expenseByGroup: groupByCategoryGroup(data.expenses),
       expenseByCategory: groupBy(data.expenses, "category"),
       expenseByKind: groupBy(data.expenses, "kind"),
@@ -3174,14 +3644,15 @@ function rebuildMonthClosure(month, year, reason) {
   if (!existing) return false;
   const data = monthlyData(month, year);
   const analytics = analyticsMonthlyData(month, year, { ignoreClosure: true });
+  const reconstructed = reconstructNetWorthAsOf(month, year);
   const snapshot = {
     id: snapshotForMonth(month, year)?.id || crypto.randomUUID(),
     month,
     year,
-    assets: data.assets,
-    liabilities: data.liabilities,
-    netWorth: data.netWorth,
-    note: `Popravljen zaključek meseca ${monthLabel(month, year)}`,
+    assets: reconstructed.assets,
+    liabilities: reconstructed.liabilities,
+    netWorth: reconstructed.netWorth,
+    note: `Popravljen zaključek meseca ${monthLabel(month, year)} (rekonstruirano iz knjige transakcij)`,
   };
   replaceOrInsertRecord("snapshots", snapshot);
   replaceRecordById("monthClosures", existing.id, {
@@ -3199,7 +3670,7 @@ function rebuildMonthClosure(month, year, reason) {
       saved: analytics.saved,
       savingsRate: analytics.savingsRate,
       invested: data.invested,
-      netWorth: data.netWorth,
+      netWorth: reconstructed.netWorth,
       expenseByGroup: groupByCategoryGroup(data.expenses),
       expenseByCategory: groupBy(data.expenses, "category"),
       expenseByKind: groupBy(data.expenses, "kind"),
@@ -3685,6 +4156,8 @@ function saveSetupMode(form) {
     name: String(row.querySelector("[data-vehicle-name]")?.value || "").trim(),
     amount: Number(row.querySelector("[data-vehicle-value]")?.value || 0),
   })).filter((row) => row.name && row.amount > 0);
+  const previousAccountsByKey = new Map((state.accounts || []).map((item) => [canonicalAssetKey(item), item]));
+  const previousLiabilitiesByKey = new Map((state.liabilities || []).map((item) => [canonicalDebtKey(item), item]));
   if (replaceSetup) {
     const assetKeys = new Set(setupAssets.map(([key]) => key));
     const debtKeys = new Set(setupDebts.map(([key]) => key));
@@ -3695,7 +4168,10 @@ function saveSetupMode(form) {
   }
   for (const asset of assetRows) {
     if (asset.amount <= 0) continue;
-    const existing = state.accounts.find((item) => canonicalAssetKey(item) === asset.key);
+    // Keep the original account id (via previousAccountsByKey) even when replaceSetup
+    // wiped it from state.accounts above - otherwise every expense/income that
+    // references this account by balanceAccountId becomes permanently orphaned.
+    const existing = previousAccountsByKey.get(asset.key);
     const row = {
       id: existing?.id || crypto.randomUUID(),
       name: asset.label,
@@ -3705,11 +4181,12 @@ function saveSetupMode(form) {
       setupKey: asset.key,
       updatedAt: new Date().toISOString(),
     };
-    state.accounts = existing ? state.accounts.map((item) => (item.id === existing.id ? row : item)) : [row, ...state.accounts];
+    const stillInAccounts = existing && state.accounts.some((item) => item.id === existing.id);
+    state.accounts = stillInAccounts ? state.accounts.map((item) => (item.id === existing.id ? row : item)) : [row, ...state.accounts];
   }
   for (const debt of debtRows) {
     if (debt.amount <= 0) continue;
-    const existing = state.liabilities.find((item) => canonicalDebtKey(item) === debt.key);
+    const existing = previousLiabilitiesByKey.get(debt.key);
     const row = {
       id: existing?.id || crypto.randomUUID(),
       name: debt.label,
@@ -3720,8 +4197,10 @@ function saveSetupMode(form) {
       note,
       setupKey: debt.key,
       updatedAt: new Date().toISOString(),
+      history: nextHistoryEntries("liabilities", existing, { amount: debt.amount, status: "odprto" }),
     };
-    state.liabilities = existing ? state.liabilities.map((item) => (item.id === existing.id ? row : item)) : [row, ...state.liabilities];
+    const stillInLiabilities = existing && state.liabilities.some((item) => item.id === existing.id);
+    state.liabilities = stillInLiabilities ? state.liabilities.map((item) => (item.id === existing.id ? row : item)) : [row, ...state.liabilities];
   }
   for (const vehicle of vehicleRows) {
     const existing = state.accounts.find((item) => item.id === vehicle.id);
@@ -4894,6 +5373,7 @@ function settingsDataView() {
       <label class="button secondary">Uvozi JSON<input type="file" accept="application/json" data-action="import-json" hidden></label>
       <button class="button secondary" data-nav="setup">Odpri začetni setup</button>
       ${currentProfile.role === "admin" ? `<button class="button secondary" data-action="repair-income-balances">Popravi manjkajoča stanja prihodkov</button>` : ""}
+      ${currentProfile.role === "admin" ? `<button class="button secondary" data-action="relink-account-references">Popravi povezave na stare račune</button>` : ""}
       <button class="button danger ghost" data-action="clear">Izbriši vse podatke</button>
     </div>
   </div></div>
@@ -5506,6 +5986,13 @@ function fieldHtml(name, type, label, value = "", options = []) {
     ).join("");
     return `<label class="${cls}">${label}<select name="${name}" required><option value="">Izberi račun</option>${accountOptions}</select></label>`;
   }
+  if (type === "liability-id-select") {
+    const liabilities = (state.liabilities || []).filter((item) => item.status !== "plačano" && item.status !== "preklicano" || item.id === value);
+    const liabilityOptions = liabilities.map((item) =>
+      `<option value="${escapeAttr(item.id)}" ${item.id === value ? "selected" : ""}>${escapeHtml(item.name)} · ${money(item.amount)} odprto</option>`
+    ).join("");
+    return `<label class="${cls}">${label}<select name="${name}"><option value="">Brez povezave</option>${liabilityOptions}</select></label>`;
+  }
   if (type === "textarea") return `<label class="${cls}">${label}<textarea name="${name}">${escapeHtml(value || "")}</textarea></label>`;
   if (type === "date") return `<label class="${cls}">${label}<input name="${name}" type="date" value="${escapeAttr(normalizeDateValue(value))}" ${required}></label>`;
   return `<label class="${cls}">${label}<input name="${name}" type="${type}" step="0.01" value="${escapeAttr(value || "")}" ${required}></label>`;
@@ -5771,6 +6258,14 @@ function bind() {
   }));
   document.querySelectorAll("[data-action='close']").forEach((btn) => btn.addEventListener("click", closeModal));
   document.querySelectorAll("[data-action='close-month']").forEach((btn) => btn.addEventListener("click", openMonthCloseModal));
+  document.querySelectorAll("[data-action='rebuild-month-closure']").forEach((btn) => btn.addEventListener("click", () => {
+    const month = Number(filters.month);
+    const year = Number(filters.year);
+    if (!confirm(`Ponovno izračunam zaključek za ${monthLabel(month, year)} iz trenutnih podatkov? Pred tem bo ustvarjena varnostna kopija.`)) return;
+    refreshClosedMonthsAfterCorrection([{ month, year, key: `${year}-${pad(month)}` }], `Ročni popravek zaključka za ${monthLabel(month, year)}`);
+    save();
+    render();
+  }));
   document.querySelectorAll("[data-create-recurring]").forEach((btn) => btn.addEventListener("click", () => createRecurringTransaction(btn.dataset.createRecurring)));
   document.querySelectorAll("[data-close-month-form]").forEach((form) => form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -5960,7 +6455,17 @@ function bind() {
       alert("Ni bilo najdenih prihodkov z manjkajočim stanjem računa.");
       return;
     }
-    alert(`Popravljenih prihodkov: ${result.fixed} (skupaj ${result.totalAmount.toFixed(2)} €).${result.unmatched ? ` Opozorilo: pri ${result.unmatched} prihodkih računa ni bilo mogoče samodejno prepoznati, preveri jih ročno.` : ""}`);
+    alert(`Popravljenih prihodkov: ${result.fixed} (skupaj ${result.totalAmount.toFixed(2)} €).${result.refreshedMonths ? ` Osvežena analitika za ${result.refreshedMonths} zaključenih mesecev.` : ""}${result.unmatched ? ` Opozorilo: pri ${result.unmatched} prihodkih računa ni bilo mogoče samodejno prepoznati, preveri jih ročno.` : ""}`);
+  }));
+  document.querySelectorAll("[data-action='relink-account-references']").forEach((btn) => btn.addEventListener("click", () => {
+    if (!confirm("Popravim povezave starih stroškov/prihodkov/prenosov na trenutne račune (npr. po ponovnem zagonu Setup-a so dobili nove ID-je)? To tudi ponovno izračuna vse zaključene mesece. Pred popravilom bo ustvarjena varnostna kopija.")) return;
+    createBackup("pred popravilom povezav na račune", state);
+    const result = relinkOrphanedAccountReferences();
+    const closures = state.monthClosures || [];
+    closures.forEach((closure) => rebuildMonthClosure(Number(closure.month), Number(closure.year), "Popravilo povezav na stare račune"));
+    save();
+    render();
+    alert(`Ponovno povezanih zapisov: ${result.relinked}.${closures.length ? ` Ponovno izračunanih zaključenih mesecev: ${closures.length}.` : ""}${result.unmatched ? ` Opozorilo: pri ${result.unmatched} zapisih računa ni bilo mogoče samodejno prepoznati, preveri jih ročno.` : ""}`);
   }));
   document.querySelectorAll("[data-restore-backup]").forEach((btn) => btn.addEventListener("click", () => restoreBackup(btn.dataset.restoreBackup)));
   document.querySelectorAll("[data-delete-backup]").forEach((btn) => btn.addEventListener("click", () => {
