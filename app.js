@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "90";
+const APP_VERSION = "91";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -669,6 +669,7 @@ async function loginWithKey(key) {
 }
 
 function logout() {
+  stopTankBattle();
   clearTimeout(cloudSaveTimer);
   cloudPendingSave = false;
   sessionStorage.removeItem(PROFILE_SESSION_KEY);
@@ -1029,7 +1030,38 @@ function triggerHeartBurst() {
   setTimeout(() => layer.remove(), 5000);
 }
 
-function tankSvg(id) {
+const TANK_TEAMS = {
+  left: {
+    name: "Zeleni",
+    hull: ["#7d8f55", "#56683a", "#36431f"],
+    turret: ["#8a9c60", "#4a5a30"],
+    barrel: ["#6a7a48", "#3c4728", "#262d18"],
+    camo: "#3f4d27",
+    camoLight: "#4d5e31",
+    skirt: "#4a5a30",
+    hatch: "#5f7240",
+    fume: "#3a4527",
+    muzzle: "#2c3420",
+    stroke: "#2c3519",
+    antenna: "#2a3119",
+  },
+  right: {
+    name: "Puščavski",
+    hull: ["#dcc48e", "#b39a62", "#76623a"],
+    turret: ["#e4cd96", "#9e8552"],
+    barrel: ["#b09a66", "#7a663b", "#4f4224"],
+    camo: "#8f7646",
+    camoLight: "#a48b57",
+    skirt: "#a48b57",
+    hatch: "#c2a971",
+    fume: "#7a663b",
+    muzzle: "#4f4224",
+    stroke: "#5a4a2a",
+    antenna: "#4a3d22",
+  },
+};
+
+function tankSvg(id, team) {
   const wheels = [30, 54, 78, 102, 126, 150, 174].map((cx) => `
     <g class="tank-wheel">
       <circle cx="${cx}" cy="87" r="10" fill="#4b513e" stroke="#1b1e15" stroke-width="2"/>
@@ -1041,54 +1073,113 @@ function tankSvg(id) {
     <svg class="tank-svg" viewBox="0 0 220 110" aria-hidden="true">
       <defs>
         <linearGradient id="${id}-hull" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#7d8f55"/><stop offset="0.55" stop-color="#56683a"/><stop offset="1" stop-color="#36431f"/>
+          <stop offset="0" stop-color="${team.hull[0]}"/><stop offset="0.55" stop-color="${team.hull[1]}"/><stop offset="1" stop-color="${team.hull[2]}"/>
         </linearGradient>
         <linearGradient id="${id}-turret" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#8a9c60"/><stop offset="1" stop-color="#4a5a30"/>
+          <stop offset="0" stop-color="${team.turret[0]}"/><stop offset="1" stop-color="${team.turret[1]}"/>
         </linearGradient>
         <linearGradient id="${id}-barrel" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#6a7a48"/><stop offset="0.5" stop-color="#3c4728"/><stop offset="1" stop-color="#262d18"/>
+          <stop offset="0" stop-color="${team.barrel[0]}"/><stop offset="0.5" stop-color="${team.barrel[1]}"/><stop offset="1" stop-color="${team.barrel[2]}"/>
         </linearGradient>
       </defs>
       <ellipse cx="102" cy="104" rx="100" ry="5" fill="rgba(0,0,0,0.45)"/>
-      <line class="tank-antenna" x1="76" y1="30" x2="64" y2="0" stroke="#2a3119" stroke-width="1.6" stroke-linecap="round"/>
-      <g class="tank-barrel">
-        <rect x="138" y="37" width="70" height="7" rx="2" fill="url(#${id}-barrel)"/>
-        <rect x="172" y="35.5" width="11" height="10" rx="2.5" fill="#3a4527"/>
-        <rect class="tank-muzzle" x="204" y="34.5" width="12" height="12" rx="2" fill="#2c3420"/>
+      <g class="tank-turret">
+        <line class="tank-antenna" x1="76" y1="30" x2="64" y2="0" stroke="${team.antenna}" stroke-width="1.6" stroke-linecap="round"/>
+        <g class="tank-barrel">
+          <rect x="138" y="37" width="70" height="7" rx="2" fill="url(#${id}-barrel)"/>
+          <rect x="172" y="35.5" width="11" height="10" rx="2.5" fill="${team.fume}"/>
+          <rect class="tank-muzzle" x="204" y="34.5" width="12" height="12" rx="2" fill="${team.muzzle}"/>
+        </g>
+        <path d="M60 54 L72 32 Q76 26 86 26 L126 26 Q134 26 140 32 L150 46 L152 54 Z" fill="url(#${id}-turret)" stroke="${team.stroke}"/>
+        <ellipse cx="96" cy="42" rx="14" ry="5" fill="${team.camoLight}" opacity="0.7"/>
+        <ellipse cx="128" cy="36" rx="7" ry="3" fill="${team.camo}" opacity="0.7"/>
+        <rect x="88" y="19" width="18" height="8" rx="3" fill="${team.hatch}" stroke="${team.stroke}"/>
       </g>
-      <path d="M60 54 L72 32 Q76 26 86 26 L126 26 Q134 26 140 32 L150 46 L152 54 Z" fill="url(#${id}-turret)" stroke="#2c3519"/>
-      <ellipse cx="96" cy="42" rx="14" ry="5" fill="#4d5e31" opacity="0.7"/>
-      <ellipse cx="128" cy="36" rx="7" ry="3" fill="#3f4d27" opacity="0.7"/>
-      <rect x="88" y="19" width="18" height="8" rx="3" fill="#5f7240" stroke="#2c3519"/>
-      <path d="M6 72 L22 52 L178 52 L204 64 L196 78 L12 78 Z" fill="url(#${id}-hull)" stroke="#2c3519"/>
-      <ellipse cx="60" cy="62" rx="16" ry="5" fill="#3f4d27" opacity="0.6"/>
-      <ellipse cx="150" cy="60" rx="12" ry="4" fill="#3f4d27" opacity="0.6"/>
-      <rect x="16" y="71" width="176" height="7" rx="2" fill="#4a5a30" stroke="#2c3519"/>
+      <path d="M6 72 L22 52 L178 52 L204 64 L196 78 L12 78 Z" fill="url(#${id}-hull)" stroke="${team.stroke}"/>
+      <ellipse cx="60" cy="62" rx="16" ry="5" fill="${team.camo}" opacity="0.6"/>
+      <ellipse cx="150" cy="60" rx="12" ry="4" fill="${team.camo}" opacity="0.6"/>
+      <rect x="16" y="71" width="176" height="7" rx="2" fill="${team.skirt}" stroke="${team.stroke}"/>
       <rect x="12" y="76" width="182" height="24" rx="12" fill="#23271c"/>
       <rect class="tank-tread" x="12" y="76" width="182" height="24" rx="12" fill="none" stroke="#454a38" stroke-width="3" stroke-dasharray="4 3"/>
       ${wheels}
     </svg>`;
 }
 
-function triggerTankBattle() {
-  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
-  document.querySelectorAll(".tank-battle").forEach((node) => node.remove());
+function tankScoreKey(profile = currentProfile) {
+  return `financa-tank-napovedi-v1:${profile?.id || "neznan"}`;
+}
 
+function readTankScore(key) {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) || "{}");
+    return { correct: Number(parsed.correct) || 0, total: Number(parsed.total) || 0, streak: Number(parsed.streak) || 0 };
+  } catch {
+    return { correct: 0, total: 0, streak: 0 };
+  }
+}
+
+function writeTankScore(key, score) {
+  try {
+    localStorage.setItem(key, JSON.stringify(score));
+  } catch {}
+}
+
+function tankScoreText(score) {
+  if (!score.total) return "Še nobene napovedi.";
+  const streak = score.streak > 1 ? ` · ${score.streak} zapored` : "";
+  return `Pravilne napovedi: ${score.correct}/${score.total}${streak}`;
+}
+
+let stopTankBattle = () => {};
+
+function triggerTankBattle() {
+  stopTankBattle();
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+
+  const scoreKey = tankScoreKey();
   const rand = (min, max) => min + Math.random() * (max - min);
   const layer = document.createElement("div");
   layer.className = "tank-battle";
   layer.innerHTML = `
-    <div class="tank tank-left"><div class="tank-drive"><div class="tank-jolt">${tankSvg("tank-l")}</div></div></div>
-    <div class="tank tank-right"><div class="tank-drive"><div class="tank-jolt">${tankSvg("tank-r")}</div></div></div>
+    <div class="tank tank-left"><div class="tank-drive"><div class="tank-jolt">${tankSvg("tank-l", TANK_TEAMS.left)}</div></div></div>
+    <div class="tank tank-right"><div class="tank-drive"><div class="tank-jolt">${tankSvg("tank-r", TANK_TEAMS.right)}</div></div></div>
+    <div class="tank-panel">
+      <div class="tank-panel-title">Kdo bo zmagal?</div>
+      <div class="tank-panel-sub">Napovej zmagovalca bitke.</div>
+      <div class="tank-panel-actions">
+        <button type="button" class="tank-pick tank-pick-left" data-tank-pick="left">${TANK_TEAMS.left.name}</button>
+        <button type="button" class="tank-pick tank-pick-right" data-tank-pick="right">${TANK_TEAMS.right.name}</button>
+      </div>
+      <button type="button" class="tank-panel-link" data-tank-pick="">Brez napovedi</button>
+      <div class="tank-panel-score">${escapeHtml(tankScoreText(readTankScore(scoreKey)))}</div>
+    </div>
   `;
   document.body.appendChild(layer);
 
   const left = layer.querySelector(".tank-left");
   const right = layer.querySelector(".tank-right");
+  const panel = layer.querySelector(".tank-panel");
   const timers = [];
   const intervals = [];
-  const later = (ms, fn) => timers.push(setTimeout(fn, ms));
+  const smokeTimers = new Map();
+  const idleAnimations = new Map();
+  let stopped = false;
+
+  const cleanup = () => {
+    stopped = true;
+    timers.forEach(clearTimeout);
+    intervals.forEach(clearInterval);
+    smokeTimers.forEach(clearInterval);
+    layer.remove();
+    stopTankBattle = () => {};
+  };
+  stopTankBattle = cleanup;
+
+  const wait = (ms) => new Promise((resolve) => timers.push(setTimeout(resolve, ms)));
+  const sideOf = (tank) => (tank === left ? "left" : "right");
+  const isLeft = (tank) => tank === left;
+  const opponent = (tank) => (tank === left ? right : left);
+  const tankWidth = () => left.getBoundingClientRect().width;
 
   const fx = (cls, x, y, size, keyframes, options) => {
     const el = document.createElement("div");
@@ -1114,16 +1205,32 @@ function triggerTankBattle() {
     });
   };
 
-  const tankWidth = () => left.getBoundingClientRect().width;
-  const isLeft = (tank) => tank === left;
+  const debris = (x, y, count, colors, speedRange, angleRange = [-165, -15]) => {
+    for (let i = 0; i < count; i++) {
+      const angle = rand(angleRange[0], angleRange[1]) * (Math.PI / 180);
+      const speed = rand(speedRange[0], speedRange[1]);
+      const duration = rand(900, 1400);
+      const piece = fx("tank-debris", x, y, rand(3, 8), ballistic(Math.cos(angle) * speed, Math.sin(angle) * speed, 1100, duration, rand(-900, 900)), { duration, easing: "linear" });
+      piece.style.background = colors[i % colors.length];
+    }
+  };
+
+  const shake = (strength) => layer.animate([
+    { transform: "translate(0, 0)" },
+    { transform: `translate(${9 * strength}px, ${-6 * strength}px)` },
+    { transform: `translate(${-8 * strength}px, ${5 * strength}px)` },
+    { transform: `translate(${6 * strength}px, ${3 * strength}px)` },
+    { transform: `translate(${-4 * strength}px, ${-3 * strength}px)` },
+    { transform: `translate(${2 * strength}px, ${strength}px)` },
+    { transform: "translate(0, 0)" },
+  ], { duration: 450 + 150 * strength, easing: "ease-out" });
 
   const dust = (tank, count = 1) => {
     const rect = tank.querySelector(".tank-svg").getBoundingClientRect();
     const dir = isLeft(tank) ? 1 : -1;
     const x = isLeft(tank) ? rect.left + rect.width * 0.08 : rect.right - rect.width * 0.08;
     for (let i = 0; i < count; i++) {
-      const size = rand(0.12, 0.22) * rect.width;
-      fx("tank-dust", x + rand(-8, 8), rect.bottom - 6, size, [
+      fx("tank-dust", x + rand(-8, 8), rect.bottom - 6, rand(0.12, 0.22) * rect.width, [
         { transform: "translate(0, 0) scale(0.4)", opacity: 0.8 },
         { transform: `translate(${-dir * rand(20, 60)}px, ${-rand(10, 35)}px) scale(1.6)`, opacity: 0 },
       ], { duration: rand(700, 1100), easing: "ease-out" });
@@ -1136,43 +1243,60 @@ function triggerTankBattle() {
     { transform: `translate(${driftX}px, ${-rise}px) scale(1.9)`, opacity: 0 },
   ], { duration, delay, easing: "ease-out" });
 
-  const explode = (x, y) => {
-    const w = tankWidth();
+  const explode = (x, y, power = 1) => {
+    const w = tankWidth() * power;
     fx("tank-flash", x, y, w * 0.95, [
       { transform: "scale(0.15)", opacity: 1 },
       { transform: "scale(1)", opacity: 1, offset: 0.25 },
       { transform: "scale(1.35)", opacity: 0 },
-    ], { duration: 550, easing: "ease-out" });
-    for (let i = 0; i < 7; i++) {
+    ], { duration: 550 * power, easing: "ease-out" });
+    for (let i = 0; i < Math.round(7 * power); i++) {
       fx("tank-fire", x + rand(-0.15, 0.15) * w, y + rand(-0.1, 0.08) * w, rand(0.25, 0.45) * w, [
         { transform: "translate(0, 0) scale(0.2)", opacity: 1 },
         { transform: `translate(${rand(-15, 15)}px, ${-rand(10, 25)}px) scale(1)`, opacity: 1, offset: 0.35 },
         { transform: `translate(${rand(-25, 25)}px, ${-rand(30, 60)}px) scale(1.3)`, opacity: 0 },
       ], { duration: rand(650, 1000), delay: i * 40, easing: "ease-out" });
     }
-    for (let i = 0; i < 18; i++) {
-      const angle = rand(-165, -15) * (Math.PI / 180);
-      const speed = rand(220, 560);
-      const duration = rand(900, 1400);
-      const piece = fx("tank-debris", x, y, rand(3, 8), ballistic(Math.cos(angle) * speed, Math.sin(angle) * speed, 1100, duration, rand(-900, 900)), { duration, easing: "linear" });
-      piece.style.background = ["#ffcf5a", "#ff8a1e", "#2b2f22", "#4b513e", "#ffe9a8"][i % 5];
-    }
-    for (let i = 0; i < 9; i++) {
+    debris(x, y, Math.round(18 * power), ["#ffcf5a", "#ff8a1e", "#2b2f22", "#4b513e", "#ffe9a8"], [220 * power, 560 * power]);
+    for (let i = 0; i < Math.round(9 * power); i++) {
       smokePuff(x + rand(-0.15, 0.15) * w, y - rand(0, 0.1) * w, rand(0.3, 0.55) * w, rand(-40, 40), rand(90, 180), rand(1800, 2600), 150 + i * 70);
     }
-    layer.animate([
-      { transform: "translate(0, 0)" },
-      { transform: "translate(9px, -6px)" },
-      { transform: "translate(-8px, 5px)" },
-      { transform: "translate(6px, 3px)" },
-      { transform: "translate(-4px, -3px)" },
-      { transform: "translate(2px, 1px)" },
-      { transform: "translate(0, 0)" },
-    ], { duration: 450, easing: "ease-out" });
+    shake(power);
   };
 
-  const hit = (tank) => {
+  const groundBurst = (x, y) => {
+    const w = tankWidth();
+    fx("tank-flash", x, y, w * 0.5, [
+      { transform: "scale(0.2)", opacity: 1 },
+      { transform: "scale(1)", opacity: 0 },
+    ], { duration: 350, easing: "ease-out" });
+    for (let i = 0; i < 6; i++) {
+      fx("tank-dust", x + rand(-0.1, 0.1) * w, y - rand(0, 0.05) * w, rand(0.25, 0.45) * w, [
+        { transform: "translate(0, 0) scale(0.3)", opacity: 0.9 },
+        { transform: `translate(${rand(-30, 30)}px, ${-rand(30, 80)}px) scale(1.7)`, opacity: 0 },
+      ], { duration: rand(1100, 1600), delay: i * 50, easing: "ease-out" });
+    }
+    debris(x, y, 14, ["#6b5a3e", "#4a3d2a", "#8a7350", "#ffb347"], [180, 420], [-150, -30]);
+    shake(0.5);
+  };
+
+  const startSmoke = (tank, heavy) => {
+    clearInterval(smokeTimers.get(tank));
     const svg = tank.querySelector(".tank-svg");
+    smokeTimers.set(tank, setInterval(() => {
+      const rect = svg.getBoundingClientRect();
+      const x = rect.left + rect.width * rand(0.35, 0.6);
+      smokePuff(x, rect.top + rect.height * 0.35, rand(0.15, heavy ? 0.3 : 0.2) * rect.width, rand(-20, 20), rand(80, 150), rand(1400, 2000));
+      if (heavy && Math.random() < 0.7) {
+        fx("tank-fire", x, rect.top + rect.height * 0.5, rand(0.08, 0.16) * rect.width, [
+          { transform: "scale(0.4)", opacity: 0.95 },
+          { transform: `translate(${rand(-6, 6)}px, ${-rand(12, 32)}px) scale(1)`, opacity: 0 },
+        ], { duration: rand(400, 700), easing: "ease-out" });
+      }
+    }, heavy ? 140 : 320));
+  };
+
+  const recoilFrom = (tank) => {
     tank.querySelector(".tank-jolt").animate([
       { transform: "none" },
       { transform: "translateX(-10px) rotate(3deg)", offset: 0.12 },
@@ -1180,24 +1304,44 @@ function triggerTankBattle() {
       { transform: "translateX(-3px) rotate(0.8deg)", offset: 0.6 },
       { transform: "none" },
     ], { duration: 600, easing: "ease-out" });
-    svg.animate([
-      { filter: "brightness(2.6) saturate(0.3)" },
-      { filter: "brightness(0.7) saturate(0.6)" },
-    ], { duration: 700, fill: "forwards" });
-    intervals.push(setInterval(() => {
-      const rect = svg.getBoundingClientRect();
-      const x = rect.left + rect.width * rand(0.35, 0.6);
-      smokePuff(x, rect.top + rect.height * 0.35, rand(0.15, 0.28) * rect.width, rand(-20, 20), rand(80, 150), rand(1400, 2000));
-      if (Math.random() < 0.6) {
-        fx("tank-fire", x, rect.top + rect.height * 0.45, rand(0.06, 0.12) * rect.width, [
-          { transform: "scale(0.4)", opacity: 0.95 },
-          { transform: `translate(${rand(-6, 6)}px, ${-rand(12, 28)}px) scale(1)`, opacity: 0 },
-        ], { duration: rand(400, 700), easing: "ease-out" });
-      }
-    }, 170));
   };
 
-  const fire = (shooter, target) => {
+  const damage = (tank) => {
+    recoilFrom(tank);
+    tank.querySelector(".tank-svg").animate([
+      { filter: "brightness(2.6) saturate(0.3)" },
+      { filter: "brightness(0.85) saturate(0.8)" },
+    ], { duration: 700, fill: "forwards" });
+    startSmoke(tank, false);
+  };
+
+  const destroy = (tank) => {
+    const svg = tank.querySelector(".tank-svg");
+    const rect = svg.getBoundingClientRect();
+    idleAnimations.get(tank)?.cancel();
+    recoilFrom(tank);
+    later(120, () => explode(rect.left + rect.width * 0.5, rect.top + rect.height * 0.45, 1.5));
+    svg.animate([
+      { filter: "brightness(3) saturate(0.2)" },
+      { filter: "brightness(0.45) saturate(0.4)" },
+    ], { duration: 900, fill: "forwards" });
+    const landing = rand(165, 185);
+    tank.querySelector(".tank-turret").animate([
+      { transform: "translate(0, 0) rotate(0)" },
+      { transform: `translate(45px, -150px) rotate(${landing * 0.55}deg)`, offset: 0.45, easing: "ease-in" },
+      { transform: `translate(95px, -2px) rotate(${landing}deg)`, offset: 0.8, easing: "ease-out" },
+      { transform: `translate(92px, -10px) rotate(${landing + 4}deg)`, offset: 0.9, easing: "ease-in" },
+      { transform: `translate(95px, -2px) rotate(${landing}deg)` },
+    ], { duration: 1500, fill: "forwards" });
+    startSmoke(tank, true);
+  };
+
+  function later(ms, fn) {
+    timers.push(setTimeout(fn, ms));
+  }
+
+  const fire = async (shooter, outcome) => {
+    const target = opponent(shooter);
     const dir = isLeft(shooter) ? 1 : -1;
     const muzzle = shooter.querySelector(".tank-muzzle").getBoundingClientRect();
     const mx = dir > 0 ? muzzle.right : muzzle.left;
@@ -1223,7 +1367,6 @@ function triggerTankBattle() {
       { transform: "rotate(-2deg)", offset: 0.75 },
       { transform: "rotate(0)" },
     ], { duration: 1100, easing: "ease-out" });
-
     fx("tank-flash", mx + dir * w * 0.08, my, w * 0.32, [
       { transform: "scale(0.2)", opacity: 1 },
       { transform: "scale(1.1)", opacity: 1, offset: 0.3 },
@@ -1235,11 +1378,21 @@ function triggerTankBattle() {
     dust(shooter, 3);
 
     const targetRect = target.querySelector(".tank-svg").getBoundingClientRect();
-    const tx = targetRect.left + targetRect.width * rand(0.42, 0.58);
-    const ty = targetRect.top + targetRect.height * 0.55;
+    const centerX = targetRect.left + targetRect.width / 2;
+    let tx = targetRect.left + targetRect.width * rand(0.42, 0.58);
+    let ty = targetRect.top + targetRect.height * 0.55;
+    let arcFactor = 0.07;
+    if (outcome === "short") {
+      tx = centerX - dir * targetRect.width * rand(0.7, 0.95);
+      ty = targetRect.bottom - targetRect.height * 0.08;
+    } else if (outcome === "over") {
+      tx = centerX + dir * window.innerWidth * 0.5;
+      ty = targetRect.top - targetRect.height * rand(0.3, 0.7);
+      arcFactor = 0.12;
+    }
     const dx = tx - mx;
     const dy = ty - my;
-    const arc = Math.abs(dx) * 0.07;
+    const arc = Math.abs(dx) * arcFactor;
     const steps = 16;
     const frames = Array.from({ length: steps + 1 }, (_, i) => {
       const p = i / steps;
@@ -1252,11 +1405,111 @@ function triggerTankBattle() {
     const shell = document.createElement("div");
     shell.className = "tank-shell";
     layer.appendChild(shell);
-    shell.animate(frames, { duration: Math.min(700, Math.max(380, Math.abs(dx) / 1.6)), easing: "linear", fill: "forwards" }).onfinish = () => {
-      shell.remove();
-      explode(tx, ty);
-      hit(target);
-    };
+    const flight = shell.animate(frames, { duration: Math.min(750, Math.max(380, Math.abs(dx) / 1.6)), easing: "linear", fill: "forwards" });
+    await wait(flight.effect.getTiming().duration);
+    shell.remove();
+    if (stopped) return;
+    if (outcome === "hit") explode(tx, ty);
+    else if (outcome === "short") groundBurst(tx, ty);
+  };
+
+  const showResult = (winner, pick) => {
+    const winnerSide = sideOf(winner);
+    const score = readTankScore(scoreKey);
+    let verdict = "Tokrat brez napovedi.";
+    if (pick) {
+      const correct = pick === winnerSide;
+      score.total += 1;
+      score.correct += correct ? 1 : 0;
+      score.streak = correct ? score.streak + 1 : 0;
+      writeTankScore(scoreKey, score);
+      verdict = correct ? "Pravilna napoved! Bravo, Tilen." : "Tokrat ni šlo. Več sreče prihodnjič!";
+    }
+    layer.querySelector(".tank-chip")?.remove();
+    const banner = document.createElement("div");
+    banner.className = `tank-panel tank-result tank-result-${winnerSide}${pick && pick === winnerSide ? " is-correct" : ""}`;
+    banner.innerHTML = `
+      <div class="tank-panel-title">🏆 Zmagal je ${TANK_TEAMS[winnerSide].name} tank!</div>
+      <div class="tank-panel-sub">${verdict}</div>
+      <div class="tank-panel-score">${escapeHtml(tankScoreText(score))}</div>
+      <button type="button" class="tank-panel-link" data-tank-close>Zapri</button>
+    `;
+    layer.appendChild(banner);
+    banner.querySelector("[data-tank-close]").addEventListener("click", fadeOut);
+  };
+
+  const victory = (winner) => {
+    const rect = winner.querySelector(".tank-svg").getBoundingClientRect();
+    winner.querySelector(".tank-jolt").animate([
+      { transform: "translateY(0)" },
+      { transform: "translateY(-8px)", offset: 0.25 },
+      { transform: "translateY(0)", offset: 0.5 },
+      { transform: "translateY(-5px)", offset: 0.75 },
+      { transform: "translateY(0)" },
+    ], { duration: 900, easing: "ease-in-out" });
+    winner.querySelector(".tank-barrel").animate([
+      { transform: "rotate(0)" },
+      { transform: "rotate(-12deg)", offset: 0.4 },
+      { transform: "rotate(-12deg)", offset: 0.7 },
+      { transform: "rotate(0)" },
+    ], { duration: 1400, easing: "ease-in-out" });
+    debris(rect.left + rect.width / 2, rect.top, 26, ["#ffd75e", "#24d6b0", "#ffffff", "#ff8a1e"], [260, 520], [-120, -60]);
+  };
+
+  let fading = false;
+  function fadeOut() {
+    if (fading) return;
+    fading = true;
+    layer.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 700, fill: "forwards" });
+    later(720, cleanup);
+  }
+
+  const run = async () => {
+    const pick = await new Promise((resolve) => {
+      panel.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-tank-pick]");
+        if (button) resolve(button.dataset.tankPick || null);
+      });
+      later(20000, () => resolve(null));
+    });
+    if (stopped) return;
+    panel.classList.add("is-hidden");
+    later(300, () => panel.remove());
+    if (pick) {
+      const chip = document.createElement("div");
+      chip.className = `tank-chip tank-chip-${pick}`;
+      chip.textContent = `Tvoja napoved: ${TANK_TEAMS[pick].name}`;
+      layer.appendChild(chip);
+    }
+    await wait(500);
+
+    const winner = Math.random() < 0.5 ? left : right;
+    const loser = opponent(winner);
+    const hp = new Map([[left, 2], [right, 2]]);
+    let shooter = Math.random() < 0.5 ? left : right;
+    let shots = 0;
+    while (hp.get(loser) > 0) {
+      const target = opponent(shooter);
+      const hit = shooter === winner
+        ? Math.random() < 0.6 || shots >= 6
+        : hp.get(winner) > 1 && shots < 6 && Math.random() < 0.45;
+      await fire(shooter, hit ? "hit" : Math.random() < 0.6 ? "short" : "over");
+      if (stopped) return;
+      if (hit) {
+        hp.set(target, hp.get(target) - 1);
+        if (hp.get(target) === 0) destroy(target);
+        else damage(target);
+      }
+      shots += 1;
+      shooter = target;
+      await wait(hp.get(loser) === 0 ? 1500 : rand(700, 1000));
+      if (stopped) return;
+    }
+    victory(winner);
+    await wait(600);
+    if (stopped) return;
+    showResult(winner, pick);
+    later(7000, fadeOut);
   };
 
   layer.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 250, fill: "forwards" });
@@ -1270,6 +1523,11 @@ function triggerTankBattle() {
       { transform: "translateY(-1.5px) rotate(-0.4deg)" },
       { transform: "translateY(0)" },
     ], { duration: 220, iterations: 6 });
+    idleAnimations.set(tank, tank.querySelector(".tank-svg").animate([
+      { transform: "translateY(0)" },
+      { transform: "translateY(-0.7px)" },
+      { transform: "translateY(0)" },
+    ], { duration: 140, iterations: Infinity, delay: 1300 }));
     tank.querySelectorAll(".tank-wheel").forEach((wheel) => wheel.animate([
       { transform: "rotate(0)" },
       { transform: "rotate(900deg)" },
@@ -1280,15 +1538,7 @@ function triggerTankBattle() {
     ], { duration: 1300, easing: "cubic-bezier(.2,.7,.3,1)" });
   });
   [80, 330, 600, 900].forEach((ms) => later(ms, () => { dust(left, 2); dust(right, 2); }));
-
-  later(1500, () => fire(left, right));
-  later(3000, () => fire(right, left));
-  later(5200, () => layer.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 800, fill: "forwards" }));
-  later(6050, () => {
-    timers.forEach(clearTimeout);
-    intervals.forEach(clearInterval);
-    layer.remove();
-  });
+  run();
 }
 
 let miniHeartThrottle = 0;
