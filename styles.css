@@ -2028,6 +2028,46 @@ button:disabled {
   border-color: color-mix(in srgb, var(--warning) 45%, transparent);
 }
 
+.unusual-list {
+  display: grid;
+  gap: 10px;
+}
+
+.unusual-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.unusual-row small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+}
+
+.unusual-actions {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 720px) {
+  .unusual-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .unusual-actions {
+    grid-column: 1 / -1;
+  }
+
+  .unusual-actions .button {
+    flex: 1;
+  }
+}
+
 .tank-battle {
   position: fixed;
   inset: 0;
