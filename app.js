@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "91";
+const APP_VERSION = "95";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -2422,6 +2422,8 @@ function sectionTabs(items) {
 
 function openModal(collection, title, item = null) {
   modal = { collection, title, item: item ? { ...item } : null };
+  rowMenuOpen = "";
+  addMenuOpen = false;
   render();
 }
 
@@ -2430,6 +2432,7 @@ function openDeleteProfileModal(profileId) {
   const profile = profiles.find((item) => item.id === profileId);
   if (!profile) return;
   modal = { collection: "deleteProfile", title: "Izbris profila", item: { profileId, profileName: profile.name } };
+  rowMenuOpen = "";
   render();
 }
 
@@ -3111,6 +3114,7 @@ function syncTransactionToLedger(tx) {
     return;
   }
   if (Number(tx.amount) < 0) {
+    const linkedExpense = (state.expenses || []).find((item) => item.id === tx.linkedExpenseId);
     const row = {
       id: tx.linkedExpenseId || crypto.randomUUID(),
       date: tx.date,
@@ -3120,7 +3124,8 @@ function syncTransactionToLedger(tx) {
       categoryGroup: tx.categoryGroup || categoryGroupFor(tx.category),
       subcategory: tx.subcategory || "",
       account: tx.account || "",
-      kind: "variabilen",
+      kind: linkedExpense?.kind || "variabilen",
+      linkedLiabilityId: linkedExpense?.linkedLiabilityId || "",
       note: tx.note || "Sinhronizirano iz transakcije",
       currency: tx.currency || "EUR",
       originalAmount: tx.amount,
@@ -3395,11 +3400,11 @@ function dashboardView() {
         <div class="card-body">${donutChart(groupByCategoryGroup(data.expenses))}</div>
       </div>
     </section>
-    <section class="dashboard-widgets" style="margin-top:14px">
+    <section class="dashboard-widgets${hasRecurringRules() ? "" : " three"}" style="margin-top:14px">
       <div class="card dashboard-link" data-nav="accounts"><div class="card-header"><h3>Računi</h3></div><div class="card-body">${bars(liquidAccounts.map((a) => [a.name, a.balance]))}</div></div>
       <div class="card dashboard-link" data-nav="liabilities"><div class="card-header"><h3>Obveznosti v 30 dneh</h3></div><div class="card-body">${upcomingHtml()}</div></div>
       <div class="card dashboard-link" data-nav="goals"><div class="card-header"><h3>Cilji</h3></div><div class="card-body">${goalSummary()}</div></div>
-      <div class="card dashboard-link" data-nav="transactions"><div class="card-header"><h3>Pričakovani vnosi</h3><span class="pill">${missingRecurringTransactions().length}</span></div><div class="card-body">${recurringAlertsHtml()}</div></div>
+      ${hasRecurringRules() ? `<div class="card dashboard-link" data-nav="transactions"><div class="card-header"><h3>Pričakovani vnosi</h3><span class="pill">${missingRecurringTransactions().length}</span></div><div class="card-body">${recurringAlertsHtml()}</div></div>` : ""}
     </section>
     <section class="card" style="margin-top:18px"><div class="card-header"><h3>Nedavne transakcije</h3><button class="button secondary" data-nav="transactions">Prikaži vse</button></div><div class="card-body table-wrap">${modernTransactionsTable(recentTransactions(6))}</div></section>
   `;
@@ -3482,16 +3487,22 @@ function expenseColumns() {
 function transactionsView() {
   const review = reviewTransactions();
   const ready = recentTransactions(200);
-  return `<section class="grid metrics">
+  const reviewCard = review.length
+    ? `<section class="card review-card"><div class="card-header"><div><h3>Za pregled</h3><p>Te transakcije potrebujejo tvojo potrditev kategorije.</p></div><span class="pill">${review.length} odprtih</span></div><div class="card-body table-wrap">${modernTransactionsTable(review)}</div></section>`
+    : "";
+  const topCards = [reviewCard, unusualExpensesCard()].filter(Boolean);
+  return `${topCards.join(`<div style="height:18px"></div>`)}
+  <section class="grid metrics"${topCards.length ? ` style="margin-top:18px"` : ""}>
     ${countCard("Za pregled", review.length, "potrebuje ročno odločitev", "warning")}
     ${countCard("Uvoženo", state.transactions.length, "vse transakcije", "positive")}
     ${countCard("Transferji", state.transactions.filter((t) => t.status === "interni transfer").length, "ne vplivajo na porabo", "warning")}
   </section>
-  ${recurringTransactionsView()}
-  <section class="grid two-col" style="margin-top:18px">
-    <div class="card"><div class="card-header"><h3>Za pregled</h3><span class="pill">${review.length} odprtih</span></div><div class="card-body table-wrap">${modernTransactionsTable(review)}</div></div>
-    <div class="card"><div class="card-header"><h3>Vse transakcije</h3></div><div class="card-body table-wrap">${modernTransactionsTable(ready)}</div></div>
-  </section>`;
+  ${hasRecurringRules() ? recurringTransactionsView() : ""}
+  <section class="card" style="margin-top:18px"><div class="card-header"><h3>Vse transakcije</h3></div><div class="card-body table-wrap">${modernTransactionsTable(ready)}</div></section>`;
+}
+
+function hasRecurringRules() {
+  return (state.recurringTransactions || []).length > 0;
 }
 
 function recurringTransactionsView() {
@@ -3565,15 +3576,93 @@ function reviewTransactions() {
   return (state.transactions || []).filter((tx) => tx.status === "za pregled" || tx.confidence === "low").sort((a, b) => new Date(b.date) - new Date(a.date));
 }
 
+const UNUSUAL_EXPENSE_IGNORED_CATEGORIES = new Set(["interni transfer", "za pregled", "investicije"]);
+
+function shiftIsoDate(dateString, days) {
+  const date = new Date(`${dateString}T00:00:00`);
+  date.setDate(date.getDate() + days);
+  return iso(date.getFullYear(), date.getMonth() + 1, date.getDate());
+}
+
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  if (!sorted.length) return 0;
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+// An expense is unusual when it is at least 3x the category median and at least 100 EUR above it.
+function unusualExpenses(today = iso(currentYear, currentMonth, now.getDate())) {
+  const expenses = state.expenses || [];
+  const since = shiftIsoDate(today, -120);
+  return expenses
+    .filter((expense) =>
+      expense.date >= since
+      && expense.date <= today
+      && expense.kind !== "enkratni večji"
+      && !expense.unusualReviewed
+      && !UNUSUAL_EXPENSE_IGNORED_CATEGORIES.has(expense.category)
+    )
+    .map((expense) => {
+      const yearBefore = shiftIsoDate(expense.date, -365);
+      const others = expenses.filter((other) =>
+        other.id !== expense.id
+        && other.category === expense.category
+        && other.kind !== "enkratni večji"
+        && other.date >= yearBefore
+        && other.date <= today
+      );
+      if (others.length < 3) return null;
+      const typical = median(others.map((other) => Math.abs(Number(other.amount || 0))));
+      const amount = Math.abs(Number(expense.amount || 0));
+      if (amount < typical * 3 || amount - typical < 100) return null;
+      return { expense, typical, samples: others.length };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.expense.date.localeCompare(a.expense.date));
+}
+
+function markExpenseOneOff(id) {
+  const expense = (state.expenses || []).find((item) => item.id === id);
+  if (!expense) return;
+  replaceRecordById("expenses", id, { ...expense, kind: "enkratni večji", unusualReviewed: true });
+  refreshClosedMonthsAfterCorrection(
+    affectedClosedPeriods(expense.date, expense.date),
+    `Strošek "${expense.name || "strošek"}" označen kot enkratni večji`
+  );
+  save();
+  render();
+}
+
+function dismissUnusualExpense(id) {
+  const expense = (state.expenses || []).find((item) => item.id === id);
+  if (!expense) return;
+  replaceRecordById("expenses", id, { ...expense, unusualReviewed: true });
+  save();
+  render();
+}
+
+function unusualExpensesCard() {
+  const rows = unusualExpenses();
+  if (!rows.length) return "";
+  return `<section class="card review-card unusual-card"><div class="card-header"><div><h3>Nenavadno veliki stroški</h3><p>Precej večji od običajnega v svoji kategoriji. Enkratni večji stroški se ne štejejo v povprečja in budgete.</p></div><span class="pill">${rows.length}</span></div><div class="card-body">
+    <div class="unusual-list">${rows.map(({ expense, typical }) => `<div class="unusual-row">
+      <div><strong>${escapeHtml(expense.name || "Strošek")}</strong><small>${escapeHtml(expense.date)} · ${escapeHtml(expense.category || "")} · običajno ${money(typical)}</small></div>
+      <strong class="negative">${money(Math.abs(Number(expense.amount || 0)))}</strong>
+      <div class="unusual-actions"><button class="button" type="button" data-unusual-oneoff="${escapeAttr(expense.id)}">Enkratni večji</button><button class="button secondary" type="button" data-unusual-dismiss="${escapeAttr(expense.id)}">Je običajen</button></div>
+    </div>`).join("")}</div>
+  </div></section>`;
+}
+
 function recentTransactions(limit = 10) {
   return [...(state.transactions || [])].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, limit);
 }
 
 function modernTransactionsTable(rows) {
   if (!rows.length) return `<div class="empty">Ni transakcij.</div>`;
-  return `<table><thead><tr><th>Ime</th><th>Znesek</th><th>Datum</th><th>Skupina</th><th>Kategorija</th><th>Račun</th><th>Status</th><th></th></tr></thead><tbody>
+  return `<table><thead><tr><th>Ime</th><th>Znesek</th><th>Datum</th><th>Skupina</th><th>Kategorija</th><th>Račun</th><th></th></tr></thead><tbody>
     ${rows.map((tx) => `<tr class="${tx.status === "za pregled" ? "review-row" : ""}">
-      <td>${escapeHtml(tx.description || "")}<br><small class="muted">${escapeHtml(tx.source || "")} ${tx.confidence ? "· " + (confidenceLevels[tx.confidence] || tx.confidence) : ""}</small></td>
+      <td>${escapeHtml(tx.description || "")}${tx.status && !["pripravljeno", "za pregled"].includes(tx.status) ? ` <span class="pill status-pill">${escapeHtml(tx.status)}</span>` : ""}<br><small class="muted">${escapeHtml(tx.source || "")} ${tx.confidence ? "· " + (confidenceLevels[tx.confidence] || tx.confidence) : ""}</small></td>
       <td><strong class="${Number(tx.amount) < 0 ? "negative" : "positive"}">${money(Number(tx.amount || 0))}</strong></td>
       <td>${escapeHtml(tx.date || "")}</td>
       <td>${escapeHtml(tx.categoryGroup || categoryGroupFor(tx.category))}</td>
@@ -3581,7 +3670,6 @@ function modernTransactionsTable(rows) {
         ? `<span class="pill confidence-${tx.confidence || "low"}">${confidenceLevels[tx.confidence] || "Nejasno"}</span><br><select data-review-category="${escapeAttr(tx.id)}">${importCategories.map((c) => option(c, tx.category)).join("")}</select>`
         : `<span class="pill">${escapeHtml(tx.category || "za pregled")}</span>${tx.subcategory ? `<br><small class="muted">${escapeHtml(tx.subcategory)}</small>` : ""}`}</td>
       <td>${escapeHtml(tx.account || "")}</td>
-      <td>${escapeHtml(tx.status || "")}</td>
       <td>${rowActionMenu("transactions", tx.id, { allowRule: !tx.transferManaged, allowDuplicate: true, allowRecurring: !tx.transferManaged })}</td>
     </tr>`).join("")}
   </tbody></table>`;
@@ -6008,6 +6096,30 @@ function recordedActivityMonths(limit = 6) {
     });
 }
 
+const MODAL_SUBJECTS = {
+  incomes: "prihodek",
+  expenses: "strošek",
+  transactions: "transakcijo",
+  transfers: "prenos",
+  accounts: "račun",
+  investments: "investicijo",
+  liabilities: "obveznost",
+  taxes: "davek",
+  goals: "cilj",
+  snapshots: "snapshot",
+  monthlyNotes: "mesečno opombo",
+  categoryRules: "pravilo kategorije",
+  budgets: "budget",
+  recurringTransactions: "ponavljajoči vnos",
+  analysisTargets: "ciljni delež",
+};
+
+function modalTitle() {
+  const subject = MODAL_SUBJECTS[modal.collection];
+  if (!subject) return `${modal.item ? "Uredi" : "Dodaj"}: ${modal.title}`;
+  return `${modal.item ? "Uredi" : "Dodaj"} ${subject}`;
+}
+
 function modalHtml() {
   if (modal.collection === "deleteProfile") return deleteProfileModalHtml();
   if (modal.collection === "closeMonth") return closeMonthModalHtml();
@@ -6015,7 +6127,7 @@ function modalHtml() {
   const current = modal.item || defaults(modal.collection);
   return `<div class="modal-backdrop">
     <form class="modal" data-form="${modal.collection}">
-      <div class="modal-head"><h3>${modal.item ? "Uredi" : "Dodaj"}: ${modal.title}</h3><button type="button" class="icon-btn" data-action="close">X</button></div>
+      <div class="modal-head"><h3>${escapeHtml(modalTitle())}</h3><button type="button" class="icon-btn" data-action="close">X</button></div>
       <div class="modal-body form-grid">
         <input type="hidden" name="id" value="${current.id || ""}">
         ${fields[modal.collection].map(([name, type, label, options]) => fieldHtml(name, type, label, current[name], options)).join("")}
@@ -6492,6 +6604,8 @@ function bind() {
     }
     openModal(collection, collection, item);
   }));
+  document.querySelectorAll("[data-unusual-oneoff]").forEach((btn) => btn.addEventListener("click", () => markExpenseOneOff(btn.dataset.unusualOneoff)));
+  document.querySelectorAll("[data-unusual-dismiss]").forEach((btn) => btn.addEventListener("click", () => dismissUnusualExpense(btn.dataset.unusualDismiss)));
   document.querySelectorAll("[data-delete]").forEach((btn) => btn.addEventListener("click", () => {
     const [collection, id] = btn.dataset.delete.split(":");
     removeItem(collection, id);

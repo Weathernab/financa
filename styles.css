@@ -647,6 +647,10 @@ button {
   gap: 12px;
 }
 
+.dashboard-widgets.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .two-col {
   grid-template-columns: minmax(0, 1.08fr) minmax(340px, 0.92fr);
 }
@@ -1771,16 +1775,24 @@ button:disabled {
   min-height: 38px;
   padding: 8px 14px;
   border-radius: 6px;
+  background: transparent;
   color: var(--muted);
   font-weight: 800;
   white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.section-tabs button:hover,
+.settings-tabs button:hover {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  color: var(--text);
 }
 
 .section-tabs button.active,
 .settings-tabs button.active {
-  background: var(--surface-2);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
   color: var(--text);
-  box-shadow: inset 0 0 0 1px var(--line);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 .row-menu-wrap {
@@ -2022,6 +2034,57 @@ button:disabled {
   0% { transform: translate(-50%, -50%) scale(0.4); opacity: 0; }
   25% { opacity: 1; transform: translate(-50%, -50%) scale(1.05); }
   100% { transform: translate(calc(-50% + var(--drift, 0px)), calc(-50% - 60px)) scale(0.75); opacity: 0; }
+}
+
+.review-card {
+  border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+}
+
+.status-pill {
+  margin-left: 6px;
+  color: var(--warning);
+  font-size: 0.72rem;
+  vertical-align: middle;
+}
+
+.unusual-list {
+  display: grid;
+  gap: 10px;
+}
+
+.unusual-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.unusual-row small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+}
+
+.unusual-actions {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 720px) {
+  .unusual-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .unusual-actions {
+    grid-column: 1 / -1;
+  }
+
+  .unusual-actions .button {
+    flex: 1;
+  }
 }
 
 .tank-battle {
@@ -2427,7 +2490,8 @@ button:disabled {
   .two-col,
   .analytics-deep,
   .dashboard-charts,
-  .dashboard-widgets {
+  .dashboard-widgets,
+  .dashboard-widgets.three {
     grid-template-columns: 1fr;
   }
 }
