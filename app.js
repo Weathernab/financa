@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "92";
+const APP_VERSION = "93";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -3114,6 +3114,7 @@ function syncTransactionToLedger(tx) {
     return;
   }
   if (Number(tx.amount) < 0) {
+    const linkedExpense = (state.expenses || []).find((item) => item.id === tx.linkedExpenseId);
     const row = {
       id: tx.linkedExpenseId || crypto.randomUUID(),
       date: tx.date,
@@ -3123,7 +3124,8 @@ function syncTransactionToLedger(tx) {
       categoryGroup: tx.categoryGroup || categoryGroupFor(tx.category),
       subcategory: tx.subcategory || "",
       account: tx.account || "",
-      kind: "variabilen",
+      kind: linkedExpense?.kind || "variabilen",
+      linkedLiabilityId: linkedExpense?.linkedLiabilityId || "",
       note: tx.note || "Sinhronizirano iz transakcije",
       currency: tx.currency || "EUR",
       originalAmount: tx.amount,
