@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "98";
+const APP_VERSION = "99";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -18,7 +18,7 @@ const pad = (value) => String(value).padStart(2, "0");
 const iso = (year, month, day) => `${year}-${pad(month)}-${pad(day)}`;
 
 const incomeCategories = ["plača", "regres", "nadure", "študentsko delo", "povračilo stroškov", "prodaja stvari", "dividende", "obresti", "prihodki", "interni transfer", "za pregled", "drugo"];
-const expenseCategories = ["stanovanje", "hrana", "gorivo", "avto", "zavarovanja", "telefon", "šport", "oblačila", "prosti čas", "naročnine", "restavracije/kava", "potovanja", "darila", "zdravje", "orodje/oprema", "davki", "gotovina", "investicije", "spletni nakupi", "bančni stroški", "interni transfer", "za pregled", "drugo"];
+const expenseCategories = ["stanovanje", "hrana", "gorivo", "avto", "zavarovanja", "telefon", "šport", "oblačila", "kozmetika", "prosti čas", "naročnine", "restavracije/kava", "potovanja", "darila", "zdravje", "orodje/oprema", "davki", "gotovina", "investicije", "spletni nakupi", "bančni stroški", "interni transfer", "za pregled", "drugo"];
 const expenseCategoryGroups = ["Bivanje", "Hrana", "Transport", "Zdravje in zavarovanja", "Življenjski slog", "Finance in davki", "Nakupi in oprema", "Transferji", "Drugo / za pregled"];
 const expenseCategoryGroupMap = {
   stanovanje: "Bivanje",
@@ -38,6 +38,7 @@ const expenseCategoryGroupMap = {
   investicije: "Finance in davki",
   "bančni stroški": "Finance in davki",
   oblačila: "Nakupi in oprema",
+  kozmetika: "Nakupi in oprema",
   "orodje/oprema": "Nakupi in oprema",
   "spletni nakupi": "Nakupi in oprema",
   gotovina: "Transferji",
@@ -4413,6 +4414,32 @@ function analyticsExpenseSample(months) {
   return state.expenses.filter((item) => selected.some(([month, year]) => sameMonth(item, "date", month, year)));
 }
 
+const REVOLUT_BUDGET_IGNORED_CATEGORIES = new Set(["interni transfer", "investicije", "gotovina", "za pregled"]);
+
+function isPaidFromAccount(expense, account) {
+  if (expense.balanceAccountId) return expense.balanceAccountId === account.id;
+  return findExpenseAccount(expense.account)?.id === account.id;
+}
+
+// Median of what was actually paid from Revolut per completed month (one-offs and transfers excluded).
+function revolutBudget(months = completedActivityMonths(6)) {
+  const revolut = accountByCanonicalKey("revolut");
+  if (!revolut) return { value: 0, months: [] };
+  const monthly = months
+    .map(([month, year]) => ({
+      month,
+      year,
+      total: sum((state.expenses || []).filter((expense) =>
+        sameMonth(expense, "date", month, year)
+        && expense.kind !== "enkratni večji"
+        && !REVOLUT_BUDGET_IGNORED_CATEGORIES.has(expense.category)
+        && isPaidFromAccount(expense, revolut)
+      )),
+    }))
+    .filter((item) => item.total > 0);
+  return { value: median(monthly.map((item) => item.total)), months: monthly };
+}
+
 function allocationGuidanceHtml() {
   const months = completedActivityMonths(6);
   if (!months.length) return `<div class="empty">Za priporočilo najprej dodaj prihodke in stroške.</div>`;
@@ -4425,25 +4452,28 @@ function allocationGuidanceHtml() {
     analyticsRecurringExpenseEntries(month, year).reduce((total, [category, value]) => total + (discretionary.has(category) ? Number(value || 0) : 0), 0)
   ));
   const essentialMonthly = Math.max(0, monthlyExpenses - discretionaryMonthly);
-  const revolutTarget = Math.min(monthlyIncome * 0.3, Math.max(discretionaryMonthly * 1.05, monthlyExpenses * 0.12));
+  const revolut = revolutBudget(months);
   const cashTarget = Math.min(300, Math.max(100, essentialMonthly / 4));
   const bankTarget = monthlyExpenses * 1.5;
   const reserveTarget = essentialMonthly * 3;
   const investTarget = Math.max(0, (monthlyIncome - monthlyExpenses) * 0.6);
   const actual = accountAllocation();
+  const revolutHint = revolut.months.length
+    ? `mediana porabe z Revoluta, ${revolut.months.length} ${revolut.months.length === 1 ? "mesec" : revolut.months.length === 2 ? "meseca" : revolut.months.length < 5 ? "meseci" : "mesecev"}`
+    : "ni porabe z Revolut računa";
   const rows = [
-    ["Revolut mesečni budget", revolutTarget, actual.revolut],
-    ["Fizična gotovina", cashTarget, actual.cash],
-    ["Operativno na banki", bankTarget, actual.bank],
-    ["Varnostna rezerva", reserveTarget, actual.savings],
-    ["Mesečno za investiranje", investTarget, actual.investments],
+    ["Revolut mesečni budget", revolut.value, revolutHint],
+    ["Fizična gotovina", cashTarget, `trenutno ${money(actual.cash)}`],
+    ["Operativno na banki", bankTarget, `trenutno ${money(actual.bank)}`],
+    ["Varnostna rezerva", reserveTarget, `trenutno ${money(actual.savings)}`],
+    ["Mesečno za investiranje", investTarget, "predlagano na mesec"],
   ];
-  return `<div class="allocation-list">${rows.map(([label, target, current]) => `<div>
+  return `<div class="allocation-list">${rows.map(([label, target, hint]) => `<div>
     <span>${label}</span>
     <strong>${money(target)}</strong>
-    <small>${label.includes("meseč") || label.includes("Budget") ? "predlagano na mesec" : `trenutno ${money(current)}`}</small>
+    <small>${escapeHtml(hint)}</small>
   </div>`).join("")}</div>
-  <p class="analysis-note">Izračun uporablja največ zadnje tri zaključene mesece. Regres in enkratni večji stroški so izločeni. Varnostna rezerva je ocenjena na tri mesece osnovnih stroškov.</p>`;
+  <p class="analysis-note">Revolut budget je mediana stroškov, plačanih z Revolut računa, v zadnjih do šestih zaključenih mesecih (brez prenosov, investicij, gotovine in enkratnih večjih stroškov). Ostali predlogi uporabljajo zadnje tri zaključene mesece brez regresa in enkratnih večjih stroškov. Varnostna rezerva je ocenjena na tri mesece osnovnih stroškov.</p>`;
 }
 
 function accountAllocation() {
@@ -4800,17 +4830,17 @@ function importPreviewTable() {
   return `<table class="import-table"><thead><tr>
     <th>Datum</th><th>Opis</th><th>Znesek</th><th>Valuta</th><th>Tip</th><th>Skupina</th><th>Kategorija</th><th>Zaupanje</th><th>Zapomni</th><th>Račun</th><th>Status</th>
   </tr></thead><tbody>${rows.map((tx) => `<tr class="${tx.status === "možen dvojnik" ? "duplicate-row" : tx.status === "za pregled" ? "review-row" : ""}">
-    <td>${escapeHtml(tx.date)}</td>
-    <td>${escapeHtml(tx.description)}</td>
-    <td><strong class="${tx.amount < 0 ? "negative" : "positive"}">${money(Math.abs(tx.amount))}</strong></td>
-    <td>${escapeHtml(tx.currency)}</td>
-    <td>${escapeHtml(tx.kind)}</td>
-    <td>${escapeHtml(tx.categoryGroup || categoryGroupFor(tx.category))}</td>
-    <td><select data-import-category="${tx.index}">${importCategories.map((c) => option(c, tx.category)).join("")}</select></td>
-    <td><span class="pill confidence-${tx.confidence}">${confidenceLevels[tx.confidence] || tx.confidence}</span><br><small>${escapeHtml(tx.ruleSource || "")}</small></td>
-    <td>${tx.manualChanged ? `<label class="remember-rule"><input type="checkbox" data-remember-rule="${tx.index}" ${tx.rememberRule ? "checked" : ""}> Zapomni</label>` : `<span class="muted">-</span>`}</td>
-    <td>${escapeHtml(tx.account)}</td>
-    <td><span class="pill ${tx.status === "možen dvojnik" ? "warning" : ""}">${escapeHtml(tx.status)}</span></td>
+    <td class="it-date">${escapeHtml(tx.date)}</td>
+    <td class="it-desc">${escapeHtml(tx.description)}</td>
+    <td class="it-amount"><strong class="${tx.amount < 0 ? "negative" : "positive"}">${tx.amount < 0 ? "−" : "+"}${money(Math.abs(tx.amount))}</strong></td>
+    <td class="it-meta">${escapeHtml(tx.currency)}</td>
+    <td class="it-meta">${escapeHtml(tx.kind)}</td>
+    <td class="it-meta">${escapeHtml(tx.categoryGroup || categoryGroupFor(tx.category))}</td>
+    <td class="it-category"><select data-import-category="${tx.index}" aria-label="Kategorija">${importCategories.map((c) => option(c, tx.category)).join("")}</select></td>
+    <td class="it-confidence"><span class="pill confidence-${tx.confidence}">${confidenceLevels[tx.confidence] || tx.confidence}</span><br><small>${escapeHtml(tx.ruleSource || "")}</small></td>
+    <td class="it-remember${tx.manualChanged ? "" : " is-empty"}">${tx.manualChanged ? `<label class="remember-rule"><input type="checkbox" data-remember-rule="${tx.index}" ${tx.rememberRule ? "checked" : ""}> Zapomni</label>` : `<span class="muted">-</span>`}</td>
+    <td class="it-meta">${escapeHtml(tx.account)}</td>
+    <td class="it-status"><span class="pill ${tx.status === "možen dvojnik" ? "warning" : ""}">${escapeHtml(tx.status)}</span></td>
   </tr>`).join("")}</tbody></table>`;
 }
 
@@ -5331,6 +5361,8 @@ function categorizeTransaction(description, type, amount) {
     rule("davki", "upravne takse", "high", "upravna taksa"),
     rule("gorivo", "bencinski servis", "high", "petrol", "omv", "shell", "mol", "ina", "eni", "agip", "tifon", "q max", "bs", "bencinski servis", "gas station", "service station", "fuel", "diesel", "petrol station"),
     rule("hrana", "živila", "high", "spar", "interspar", "mercator", "lidl", "hofer", "eurospin", "tuš", "tus", "e.leclerc", "leclerc", "jager", "fama", "mlinotest", "pekarna", "bakery", "market", "supermarket", "grocery", "živila", "zivila", "mesnica", "ribarnica"),
+    rule("kozmetika", "drogerija", "high", "drogerie", "drogerija", "muller", "douglas", "sephora", "notino", "lush", "rossmann", "parfumerija", "parfumeri", "cosmetics", "kozmetika", "kozmeticn"),
+    rule("kozmetika", "storitve", "high", "frizer", "frizerski", "barber", "manikura", "pedikura", "beauty salon", "kozmeticni salon"),
     rule("restavracije/kava", "gostinstvo", "high", "mcdonald", "burger king", "kfc", "subway", "wolt", "glovo", "ehrana", "bolt food", "restaurant", "restavracija", "gostilna", "pizzeria", "pizzerija", "kebab", "sushi", "grill", "fast food", "slaščičarna", "okrepčevalnica"),
     rule("restavracije/kava", "gostinstvo", "medium", "bar", "cafe", "café", "coffee", "kavarna", "bistro", "pub"),
     rule("stanovanje", "najemnina", "high", "najemnina", "rent"),
@@ -5389,9 +5421,17 @@ function rule(category, subcategory, confidence, ...keywords) {
   return { category, subcategory, confidence, keywords, source: "sistemsko pravilo" };
 }
 
+// Short keywords like "ina", "bar" or "mol" must match a whole word, otherwise "Marina" would be fuel.
+function textHasKeyword(normalizedText, keyword) {
+  const needle = normalizeText(keyword);
+  if (needle.length > 3) return normalizedText.includes(needle);
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`).test(normalizedText);
+}
+
 function matchRule(text, rules) {
   const normalized = normalizeText(text);
-  const matched = rules.find((item) => item.keywords.some((keyword) => normalized.includes(normalizeText(keyword))));
+  const matched = rules.find((item) => item.keywords.some((keyword) => textHasKeyword(normalized, keyword)));
   return matched ? { category: matched.category, subcategory: matched.subcategory, confidence: matched.confidence, source: matched.source } : null;
 }
 
@@ -6840,6 +6880,11 @@ function bind() {
   document.querySelectorAll("form[data-form]").forEach((form) => form.addEventListener("submit", (event) => {
     event.preventDefault();
     upsert(form.dataset.form, Object.fromEntries(new FormData(form).entries()));
+  }));
+  document.querySelectorAll("form[data-form] select[name='category']").forEach((select) => select.addEventListener("change", () => {
+    const group = select.form?.querySelector("select[name='categoryGroup']");
+    const next = categoryGroupFor(select.value);
+    if (group && [...group.options].some((item) => item.value === next)) group.value = next;
   }));
   document.querySelectorAll("[data-google-sheets-form]").forEach((form) => form.addEventListener("submit", async (event) => {
     event.preventDefault();
