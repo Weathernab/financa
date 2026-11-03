@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "98";
+const APP_VERSION = "101";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -18,7 +18,7 @@ const pad = (value) => String(value).padStart(2, "0");
 const iso = (year, month, day) => `${year}-${pad(month)}-${pad(day)}`;
 
 const incomeCategories = ["plača", "regres", "nadure", "študentsko delo", "povračilo stroškov", "prodaja stvari", "dividende", "obresti", "prihodki", "interni transfer", "za pregled", "drugo"];
-const expenseCategories = ["stanovanje", "hrana", "gorivo", "avto", "zavarovanja", "telefon", "šport", "oblačila", "prosti čas", "naročnine", "restavracije/kava", "potovanja", "darila", "zdravje", "orodje/oprema", "davki", "gotovina", "investicije", "spletni nakupi", "bančni stroški", "interni transfer", "za pregled", "drugo"];
+const expenseCategories = ["stanovanje", "hrana", "gorivo", "avto", "zavarovanja", "telefon", "šport", "oblačila", "kozmetika", "prosti čas", "naročnine", "restavracije/kava", "potovanja", "darila", "zdravje", "orodje/oprema", "davki", "gotovina", "investicije", "spletni nakupi", "bančni stroški", "interni transfer", "za pregled", "drugo"];
 const expenseCategoryGroups = ["Bivanje", "Hrana", "Transport", "Zdravje in zavarovanja", "Življenjski slog", "Finance in davki", "Nakupi in oprema", "Transferji", "Drugo / za pregled"];
 const expenseCategoryGroupMap = {
   stanovanje: "Bivanje",
@@ -38,6 +38,7 @@ const expenseCategoryGroupMap = {
   investicije: "Finance in davki",
   "bančni stroški": "Finance in davki",
   oblačila: "Nakupi in oprema",
+  kozmetika: "Nakupi in oprema",
   "orodje/oprema": "Nakupi in oprema",
   "spletni nakupi": "Nakupi in oprema",
   gotovina: "Transferji",
@@ -2064,7 +2065,7 @@ async function pushGoogleSheets({ confirmOverwrite = false, quiet = false } = {}
     if (freshness.isNewer) {
       if (!confirmOverwrite) {
         cloudAutoSyncPaused = true;
-        cloudStatus = { state: "error", message: `Google Sheets je novejši od te naprave (${formatSyncTime(freshness.updatedAt)}). Najprej klikni "Prenesi iz Sheets".` };
+        cloudStatus = { state: "error", message: cloudConflictMessage(freshness) };
         return false;
       }
       const overwrite = confirm(`Google Sheets je novejši od te naprave (${formatSyncTime(freshness.updatedAt)}). Vseeno prepišem Sheets s podatki iz te naprave?`);
@@ -2143,15 +2144,23 @@ async function remoteFreshness() {
     pendingSinceTime || (localUpdatedTime && syncedLocalTime && localUpdatedTime > syncedLocalTime + 1000)
   );
   const remoteAdvancedSinceSync = Boolean(remoteTime && (!syncedRemoteTime || remoteTime > syncedRemoteTime + 1000));
-  const remoteChangedAfterLocalEdit = Boolean(remoteAdvancedSinceSync && localUpdatedTime && remoteTime > localUpdatedTime + 1000);
+  // Any remote change this device has not pulled yet blocks an automatic push, even if the local edit is
+  // later: the push replaces the whole state and would silently drop the other device's changes.
   return {
     updatedAt: result.updatedAt || "",
     schemaVersion: remoteStateSchema(null, result),
     appVersion: result.appVersion || "",
     remoteAdvancedSinceSync,
     hasLocalChangesSinceSync,
-    isNewer: Boolean(remoteAdvancedSinceSync && (!hasLocalChangesSinceSync || remoteChangedAfterLocalEdit)),
+    conflict: Boolean(remoteAdvancedSinceSync && hasLocalChangesSinceSync),
+    isNewer: remoteAdvancedSinceSync,
   };
+}
+
+function cloudConflictMessage(freshness) {
+  return freshness.conflict
+    ? `Na drugi napravi so bile ${formatSyncTime(freshness.updatedAt)} shranjene spremembe, ki jih ta naprava še nima, tu pa imaš neposlane spremembe. Samodejna sinhronizacija je ustavljena, da se nič ne izgubi: izvozi JSON, nato izberi "Prenesi iz Sheets" (in ponovno vnesi spremembe s te naprave) ali "Pošlji v Sheets" (prepiše spremembe druge naprave).`
+    : `Google Sheets je novejši od te naprave (${formatSyncTime(freshness.updatedAt)}). Najprej klikni "Prenesi iz Sheets".`;
 }
 
 async function initializeGoogleSheetsSync() {
@@ -2174,7 +2183,7 @@ async function initializeGoogleSheetsSync() {
       const freshness = await remoteFreshness();
       if (freshness.isNewer) {
         cloudAutoSyncPaused = true;
-        cloudStatus = { state: "error", message: `Google Sheets je novejši od lokalnih sprememb (${formatSyncTime(freshness.updatedAt)}). Samodejno prepisovanje je ustavljeno.` };
+        cloudStatus = { state: "error", message: cloudConflictMessage(freshness) };
         render();
         return;
       }
@@ -2337,6 +2346,7 @@ function reconstructAccountsAsOf(cutoffDate) {
     (state.expenses || []).filter((item) => item.date > cutoffDate).forEach(restoreExpenseBalance);
     (state.incomes || []).filter((item) => item.date > cutoffDate).forEach(restoreIncomeBalance);
     (state.transactions || []).filter((item) => item.transferManaged && item.date > cutoffDate).forEach(restoreTransferBalance);
+    (state.transactions || []).filter((item) => item.balanceAdjustment && item.date > cutoffDate).forEach(restoreBalanceAdjustment);
     return state.accounts;
   } finally {
     state.accounts = original;
@@ -2590,7 +2600,8 @@ function applyLiabilityReduction(expense) {
   if (!expense.linkedLiabilityId) return { linkedLiabilityId: "", liabilityImpact: 0 };
   const liability = (state.liabilities || []).find((item) => item.id === expense.linkedLiabilityId);
   if (!liability) return { linkedLiabilityId: "", liabilityImpact: 0 };
-  const impact = Math.abs(Number(expense.amount || 0));
+  // Only the part that actually reduced the debt is recorded, so deleting an overpayment restores the right amount.
+  const impact = Math.min(Math.abs(Number(expense.amount || 0)), Math.max(0, Number(liability.amount || 0)));
   const nextAmount = Math.max(0, Number(liability.amount || 0) - impact);
   const nextStatus = nextAmount <= 0.004 ? "plačano" : liability.status;
   const updated = {
@@ -3237,6 +3248,7 @@ function removeItem(collection, id) {
   if (collection === "transactions") {
     const tx = (state.transactions || []).find((item) => item.id === id);
     if (tx?.transferManaged) restoreTransferBalance(tx);
+    if (tx?.balanceAdjustment) restoreBalanceAdjustment(tx);
     if (tx) removeLinkedLedger(tx);
   }
   if (collection === "expenses") {
@@ -3821,7 +3833,7 @@ function modernTransactionsTable(rows) {
         ? `<span class="pill confidence-${tx.confidence || "low"}">${confidenceLevels[tx.confidence] || "Nejasno"}</span><br><select data-review-category="${escapeAttr(tx.id)}">${importCategories.map((c) => option(c, tx.category)).join("")}</select>`
         : `<span class="pill">${escapeHtml(tx.category || "za pregled")}</span>${tx.subcategory ? `<br><small class="muted">${escapeHtml(tx.subcategory)}</small>` : ""}`}</td>
       <td>${escapeHtml(tx.account || "")}</td>
-      <td>${rowActionMenu("transactions", tx.id, { allowRule: !tx.transferManaged, allowDuplicate: true, allowRecurring: !tx.transferManaged })}</td>
+      <td>${rowActionMenu("transactions", tx.id, { allowRule: !tx.transferManaged && !tx.balanceAdjustment, allowDuplicate: !tx.balanceAdjustment, allowRecurring: !tx.transferManaged && !tx.balanceAdjustment })}</td>
     </tr>`).join("")}
   </tbody></table>`;
 }
@@ -3969,7 +3981,9 @@ function monthlyView() {
       <div><strong>${closure ? "Mesec je zaključen" : "Mesec še ni zaključen"}</strong><span>${closure ? `Zaključeno ${formatSyncTime(closure.closedAt)}. Analitične številke so zaklenjene.${closure.recalculatedAt ? ` Popravljeno ${formatSyncTime(closure.recalculatedAt)}.` : ""}` : "Zaključek shrani snapshot, komentar in budgete ter pripravi naslednji mesec."}</span></div>
       ${closure
         ? `<span class="sync-badge success">Zaklenjeno</span>${currentProfile.role === "admin" ? `<button class="button secondary" type="button" data-action="rebuild-month-closure">Osveži zaključek</button>` : ""}`
-        : `<button class="button" type="button" data-action="close-month">Zaključi mesec</button>`}
+        : isFutureMonth(filters.month, filters.year)
+          ? `<span class="sync-badge">Mesec se še ni začel</span>`
+          : `<button class="button" type="button" data-action="close-month">Zaključi mesec</button>`}
     </div>
     <section class="grid metrics" style="margin-top:14px">
       ${metricCard(["Prihodki", displayed.incomeTotal, monthLabel(filters.month, filters.year), "positive"])}
@@ -4042,8 +4056,12 @@ function monthlyBudgetView(month, year) {
   </div></section>`;
 }
 
+function isFutureMonth(month, year) {
+  return Number(year) > currentYear || (Number(year) === currentYear && Number(month) > currentMonth);
+}
+
 function openMonthCloseModal() {
-  if (monthClosure(filters.month, filters.year)) return;
+  if (monthClosure(filters.month, filters.year) || isFutureMonth(filters.month, filters.year)) return;
   modal = { collection: "closeMonth", title: "Zaključi mesec", item: { month: filters.month, year: filters.year } };
   render();
 }
@@ -4051,7 +4069,7 @@ function openMonthCloseModal() {
 function closeMonth(values) {
   const month = Number(modal?.item?.month || filters.month);
   const year = Number(modal?.item?.year || filters.year);
-  if (monthClosure(month, year)) return closeModal();
+  if (monthClosure(month, year) || isFutureMonth(month, year)) return closeModal();
   const data = monthlyData(month, year);
   const analytics = analyticsMonthlyData(month, year, { ignoreClosure: true });
   const reconstructed = reconstructNetWorthAsOf(month, year);
@@ -4413,6 +4431,32 @@ function analyticsExpenseSample(months) {
   return state.expenses.filter((item) => selected.some(([month, year]) => sameMonth(item, "date", month, year)));
 }
 
+const REVOLUT_BUDGET_IGNORED_CATEGORIES = new Set(["interni transfer", "investicije", "gotovina", "za pregled"]);
+
+function isPaidFromAccount(expense, account) {
+  if (expense.balanceAccountId) return expense.balanceAccountId === account.id;
+  return findExpenseAccount(expense.account)?.id === account.id;
+}
+
+// Median of what was actually paid from Revolut per completed month (one-offs and transfers excluded).
+function revolutBudget(months = completedActivityMonths(6)) {
+  const revolut = accountByCanonicalKey("revolut");
+  if (!revolut) return { value: 0, months: [] };
+  const monthly = months
+    .map(([month, year]) => ({
+      month,
+      year,
+      total: sum((state.expenses || []).filter((expense) =>
+        sameMonth(expense, "date", month, year)
+        && expense.kind !== "enkratni večji"
+        && !REVOLUT_BUDGET_IGNORED_CATEGORIES.has(expense.category)
+        && isPaidFromAccount(expense, revolut)
+      )),
+    }))
+    .filter((item) => item.total > 0);
+  return { value: median(monthly.map((item) => item.total)), months: monthly };
+}
+
 function allocationGuidanceHtml() {
   const months = completedActivityMonths(6);
   if (!months.length) return `<div class="empty">Za priporočilo najprej dodaj prihodke in stroške.</div>`;
@@ -4425,25 +4469,28 @@ function allocationGuidanceHtml() {
     analyticsRecurringExpenseEntries(month, year).reduce((total, [category, value]) => total + (discretionary.has(category) ? Number(value || 0) : 0), 0)
   ));
   const essentialMonthly = Math.max(0, monthlyExpenses - discretionaryMonthly);
-  const revolutTarget = Math.min(monthlyIncome * 0.3, Math.max(discretionaryMonthly * 1.05, monthlyExpenses * 0.12));
+  const revolut = revolutBudget(months);
   const cashTarget = Math.min(300, Math.max(100, essentialMonthly / 4));
   const bankTarget = monthlyExpenses * 1.5;
   const reserveTarget = essentialMonthly * 3;
   const investTarget = Math.max(0, (monthlyIncome - monthlyExpenses) * 0.6);
   const actual = accountAllocation();
+  const revolutHint = revolut.months.length
+    ? `mediana porabe z Revoluta, ${revolut.months.length} ${revolut.months.length === 1 ? "mesec" : revolut.months.length === 2 ? "meseca" : revolut.months.length < 5 ? "meseci" : "mesecev"}`
+    : "ni porabe z Revolut računa";
   const rows = [
-    ["Revolut mesečni budget", revolutTarget, actual.revolut],
-    ["Fizična gotovina", cashTarget, actual.cash],
-    ["Operativno na banki", bankTarget, actual.bank],
-    ["Varnostna rezerva", reserveTarget, actual.savings],
-    ["Mesečno za investiranje", investTarget, actual.investments],
+    ["Revolut mesečni budget", revolut.value, revolutHint],
+    ["Fizična gotovina", cashTarget, `trenutno ${money(actual.cash)}`],
+    ["Operativno na banki", bankTarget, `trenutno ${money(actual.bank)}`],
+    ["Varnostna rezerva", reserveTarget, `trenutno ${money(actual.savings)}`],
+    ["Mesečno za investiranje", investTarget, "predlagano na mesec"],
   ];
-  return `<div class="allocation-list">${rows.map(([label, target, current]) => `<div>
+  return `<div class="allocation-list">${rows.map(([label, target, hint]) => `<div>
     <span>${label}</span>
     <strong>${money(target)}</strong>
-    <small>${label.includes("meseč") || label.includes("Budget") ? "predlagano na mesec" : `trenutno ${money(current)}`}</small>
+    <small>${escapeHtml(hint)}</small>
   </div>`).join("")}</div>
-  <p class="analysis-note">Izračun uporablja največ zadnje tri zaključene mesece. Regres in enkratni večji stroški so izločeni. Varnostna rezerva je ocenjena na tri mesece osnovnih stroškov.</p>`;
+  <p class="analysis-note">Revolut budget je mediana stroškov, plačanih z Revolut računa, v zadnjih do šestih zaključenih mesecih (brez prenosov, investicij, gotovine in enkratnih večjih stroškov). Ostali predlogi uporabljajo zadnje tri zaključene mesece brez regresa in enkratnih večjih stroškov. Varnostna rezerva je ocenjena na tri mesece osnovnih stroškov.</p>`;
 }
 
 function accountAllocation() {
@@ -4453,7 +4500,7 @@ function accountAllocation() {
     bank: byKey("banka"),
     revolut: byKey("revolut"),
     cash: byKey("gotovina"),
-    savings: byKey("varcevalni"),
+    savings: byKey("varcevalni") + byKey(REVOLUT_SAVINGS_KEY),
     investments: sum(investmentAccounts(), "balance") + sum(netWorthBreakdown().investments, "currentValue"),
   };
 }
@@ -4744,6 +4791,9 @@ function importMappingHtml() {
     ["balance", "stanje"],
     ["type", "tip"],
     ["reference", "reference / merchant"],
+    ["product", "produkt (Revolut)"],
+    ["fee", "provizija"],
+    ["state", "stanje transakcije"],
   ];
   return `<div class="import-summary">
     <div><span>Datoteka</span><strong>${escapeHtml(importDraft.fileName)}</strong></div>
@@ -4755,9 +4805,23 @@ function importMappingHtml() {
     <div><span>Prihodki</span><strong class="positive">${money(stats.incomeTotal)}</strong></div>
     <div><span>Interni transferji</span><strong>${money(stats.transferTotal)}</strong></div>
   </div>
+  ${statementCheckHtml()}
   <div class="mapping-grid">
     ${mappingFields.map(([key, label]) => `<label>${label}<select data-map="${key}"><option value="">Ni stolpca</option>${headers.map((h) => option(h, importDraft.mapping[key])).join("")}</select></label>`).join("")}
     <label>Račun<input data-import-account value="${escapeAttr(importDraft.account)}"></label>
+  </div>`;
+}
+
+function statementCheckHtml() {
+  const balances = statementBalances();
+  if (!balances.length) return "";
+  return `<div class="statement-check">
+    <strong>Stanje po izpisku</strong>
+    ${balances.map((item) => {
+      const account = statementAccount(item.account);
+      return `<div><span>${escapeHtml(item.account)}${account ? "" : " (nov račun)"}</span><b>${money(item.balance)}</b><small>na ${escapeHtml(item.date)}${account ? ` · v aplikaciji zdaj ${money(account.balance)}` : ""}</small></div>`;
+    }).join("")}
+    <label class="remember-rule"><input type="checkbox" data-import-reconcile ${importDraft.reconcile === false ? "" : "checked"}> Po uvozu uskladi stanja z izpiskom</label>
   </div>`;
 }
 
@@ -4770,7 +4834,7 @@ function importStats() {
     duplicates: rows.filter((tx) => tx.status === "možen dvojnik").length,
     expenseTotal: rows.filter((tx) => tx.status === "pripravljeno" && tx.amount < 0).reduce((total, tx) => total + Math.abs(tx.amount), 0),
     incomeTotal: rows.filter((tx) => tx.status === "pripravljeno" && tx.amount > 0).reduce((total, tx) => total + tx.amount, 0),
-    transferTotal: rows.filter((tx) => tx.status === "interni transfer").reduce((total, tx) => total + Math.abs(tx.amount), 0),
+    transferTotal: rows.filter((tx) => tx.status === "interni transfer" && tx.pocket !== "paired").reduce((total, tx) => total + Math.abs(tx.amount), 0),
   };
 }
 
@@ -4800,17 +4864,17 @@ function importPreviewTable() {
   return `<table class="import-table"><thead><tr>
     <th>Datum</th><th>Opis</th><th>Znesek</th><th>Valuta</th><th>Tip</th><th>Skupina</th><th>Kategorija</th><th>Zaupanje</th><th>Zapomni</th><th>Račun</th><th>Status</th>
   </tr></thead><tbody>${rows.map((tx) => `<tr class="${tx.status === "možen dvojnik" ? "duplicate-row" : tx.status === "za pregled" ? "review-row" : ""}">
-    <td>${escapeHtml(tx.date)}</td>
-    <td>${escapeHtml(tx.description)}</td>
-    <td><strong class="${tx.amount < 0 ? "negative" : "positive"}">${money(Math.abs(tx.amount))}</strong></td>
-    <td>${escapeHtml(tx.currency)}</td>
-    <td>${escapeHtml(tx.kind)}</td>
-    <td>${escapeHtml(tx.categoryGroup || categoryGroupFor(tx.category))}</td>
-    <td><select data-import-category="${tx.index}">${importCategories.map((c) => option(c, tx.category)).join("")}</select></td>
-    <td><span class="pill confidence-${tx.confidence}">${confidenceLevels[tx.confidence] || tx.confidence}</span><br><small>${escapeHtml(tx.ruleSource || "")}</small></td>
-    <td>${tx.manualChanged ? `<label class="remember-rule"><input type="checkbox" data-remember-rule="${tx.index}" ${tx.rememberRule ? "checked" : ""}> Zapomni</label>` : `<span class="muted">-</span>`}</td>
-    <td>${escapeHtml(tx.account)}</td>
-    <td><span class="pill ${tx.status === "možen dvojnik" ? "warning" : ""}">${escapeHtml(tx.status)}</span></td>
+    <td class="it-date">${escapeHtml(tx.date)}</td>
+    <td class="it-desc">${escapeHtml(tx.description)}</td>
+    <td class="it-amount"><strong class="${tx.amount < 0 ? "negative" : "positive"}">${tx.amount < 0 ? "−" : "+"}${money(Math.abs(tx.amount))}</strong></td>
+    <td class="it-meta">${escapeHtml(tx.currency)}</td>
+    <td class="it-meta">${escapeHtml(tx.kind)}</td>
+    <td class="it-meta">${escapeHtml(tx.categoryGroup || categoryGroupFor(tx.category))}</td>
+    <td class="it-category"><select data-import-category="${tx.index}" aria-label="Kategorija">${importCategories.map((c) => option(c, tx.category)).join("")}</select></td>
+    <td class="it-confidence"><span class="pill confidence-${tx.confidence}">${confidenceLevels[tx.confidence] || tx.confidence}</span><br><small>${escapeHtml(tx.ruleSource || "")}</small></td>
+    <td class="it-remember${tx.manualChanged ? "" : " is-empty"}">${tx.manualChanged ? `<label class="remember-rule"><input type="checkbox" data-remember-rule="${tx.index}" ${tx.rememberRule ? "checked" : ""}> Zapomni</label>` : `<span class="muted">-</span>`}</td>
+    <td class="it-meta">${escapeHtml(tx.account)}</td>
+    <td class="it-status"><span class="pill ${tx.status === "možen dvojnik" ? "warning" : ""}">${escapeHtml(tx.status)}</span></td>
   </tr>`).join("")}</tbody></table>`;
 }
 
@@ -5186,6 +5250,9 @@ function detectRevolutMapping(headers) {
     balance: find("balance", "stanje"),
     type: find("type", "tip", "vrsta"),
     reference: find("merchant", "reference", "counterparty", "prejemnik", "placnik", "plačnik", "naziv"),
+    product: find("product", "produkt"),
+    fee: find("fee", "provizija"),
+    state: find("state", "status"),
   };
 }
 
@@ -5197,13 +5264,9 @@ function rebuildImportDraft() {
       .map((part) => String(part || "").trim())
       .filter(Boolean);
     const description = [...new Set(descriptionParts)].join(" · ") || "Bančna transakcija";
-    const rawAmount = readMapped(row, "amount");
-    const debit = parseAmount(readMapped(row, "debit"));
-    const credit = parseAmount(readMapped(row, "credit"));
-    const amount = rawAmount !== "" && rawAmount !== null && rawAmount !== undefined
-      ? parseAmount(rawAmount)
-      : credit - Math.abs(debit);
+    const amount = importRowAmount(row);
     const type = readMapped(row, "type");
+    const product = String(readMapped(row, "product") || "").trim();
     const learned = importDraft.transactions?.[index];
     const classification = learned?.manualChanged
       ? { category: learned.category, subcategory: learned.subcategory || "", confidence: "manual", source: "ročno potrjeno" }
@@ -5216,19 +5279,36 @@ function rebuildImportDraft() {
       currency: String(readMapped(row, "currency") || "EUR").trim(),
       balance: parseAmount(readMapped(row, "balance")),
       kind: type || (amount < 0 ? "strošek" : "prihodek"),
+      product,
       reference: readMapped(row, "reference"),
       category: classification.category,
       categoryGroup: categoryGroupFor(classification.category),
       subcategory: classification.subcategory || "",
       confidence: classification.confidence,
       ruleSource: classification.source,
-      account: importDraft.account || "Revolut",
+      account: isSavingsProduct(product) ? revolutSavingsAccount()?.name || REVOLUT_SAVINGS_NAME : importDraft.account || "Revolut",
       status: "pripravljeno",
       manualChanged: learned?.manualChanged || false,
       rememberRule: learned?.rememberRule || false,
     };
+    const personTransfer = !tx.manualChanged && ["nakazilo osebe", "nakazilo osebi"].includes(classification.source);
     if (!tx.date || !Number.isFinite(tx.amount) || tx.amount === 0) tx.status = "nepopolno";
-    if (tx.status !== "nepopolno" && hasMatchingManualTransfer(tx)) {
+    if (tx.status !== "nepopolno" && /(revert|declin|fail|cancel)/.test(normalizeText(readMapped(row, "state")))) {
+      tx.status = "preklicano";
+      tx.ruleSource = "preklicana transakcija";
+    }
+    if (["nepopolno", "preklicano"].includes(tx.status) || personTransfer || tx.category === "obresti") {
+      // Classified above; must not be turned into an internal transfer below.
+    } else if (!tx.manualChanged && isPocketTransfer(tx)) {
+      tx.status = "interni transfer";
+      tx.category = "interni transfer";
+      tx.categoryGroup = categoryGroupFor("interni transfer");
+      tx.subcategory = "Revolut ↔ varčevanje";
+      tx.confidence = "high";
+      tx.pocket = isSavingsProduct(product) || !hasPocketCounterpart(tx, index) ? "create" : "paired";
+      tx.ruleSource = tx.pocket === "paired" ? "par prenosa na varčevanje" : "prenos na varčevanje";
+      if (tx.pocket === "create" && (state.transactions || []).some((item) => item.importKey === transactionKey(tx))) tx.status = "možen dvojnik";
+    } else if (tx.status !== "nepopolno" && hasMatchingManualTransfer(tx)) {
       tx.status = "možen dvojnik";
       tx.category = "interni transfer";
       tx.subcategory = "že ročno zabeležen prenos";
@@ -5265,6 +5345,75 @@ function rebuildImportDraft() {
 
 function readMapped(row, key) {
   return row[importDraft.mapping[key]] || "";
+}
+
+// Revolut's Balance column is "previous + Amount - Fee", so the fee belongs to the transaction.
+function importRowAmount(row) {
+  const rawAmount = readMapped(row, "amount");
+  const amount = rawAmount !== "" && rawAmount !== null && rawAmount !== undefined
+    ? parseAmount(rawAmount)
+    : parseAmount(readMapped(row, "credit")) - Math.abs(parseAmount(readMapped(row, "debit")));
+  return amount - Math.abs(parseAmount(readMapped(row, "fee")));
+}
+
+function hasPocketCounterpart(tx, currentIndex) {
+  const cents = amountCents(tx.amount);
+  return (importDraft.rows || []).some((row, index) => {
+    if (index === currentIndex || !isSavingsProduct(readMapped(row, "product"))) return false;
+    if (!normalizeText(readMapped(row, "type")).includes("transfer")) return false;
+    const amount = importRowAmount(row);
+    return Math.sign(amount) !== Math.sign(tx.amount)
+      && amountCents(amount) === cents
+      && daysBetweenDates(normalizeDate(readMapped(row, "date")), tx.date) <= 2;
+  });
+}
+
+// "Revolut varčevanje" must never fall back to the main Revolut account through name matching.
+function statementAccount(reference) {
+  const savings = revolutSavingsAccount();
+  if (normalizeText(reference) === normalizeText(savings?.name || REVOLUT_SAVINGS_NAME)) return savings;
+  return findExpenseAccount(reference);
+}
+
+function isRevolutAccountReference(reference) {
+  if (normalizeText(reference) === normalizeText(revolutSavingsAccount()?.name || REVOLUT_SAVINGS_NAME)) return true;
+  const account = findExpenseAccount(reference);
+  return Boolean(account && ["revolut", REVOLUT_SAVINGS_KEY].includes(canonicalAssetKey(account)));
+}
+
+// Closing balance per Revolut account. Revolut lists each account's rows in completion order, so the
+// last row in the file carries the closing Balance (row dates are start dates and can be out of order).
+function statementBalances() {
+  if (!importDraft?.mapping?.balance) return [];
+  const transactions = importDraft.transactions || [];
+  const byAccount = new Map();
+  importDraft.rows.forEach((row, index) => {
+    const rawBalance = String(readMapped(row, "balance") || "").trim();
+    const tx = transactions[index];
+    if (!rawBalance || !tx?.date || tx.status === "preklicano" || tx.status === "nepopolno") return;
+    if (normalizeText(tx.currency || "EUR") !== "eur" || !isRevolutAccountReference(tx.account)) return;
+    if (!byAccount.has(tx.account)) byAccount.set(tx.account, []);
+    byAccount.get(tx.account).push({ index, date: tx.date, balance: parseAmount(rawBalance) });
+  });
+  return [...byAccount].map(([account, rows]) => {
+    const newestFirst = rows.length > 1 && rows[0].date > rows[rows.length - 1].date;
+    const closing = newestFirst ? rows[0] : rows[rows.length - 1];
+    const date = rows.reduce((latest, row) => (row.date > latest ? row.date : latest), rows[0].date);
+    return { account, date, balance: closing.balance };
+  });
+}
+
+// Review transactions are stored without touching balances; they will move the balance once confirmed.
+function pendingReviewAmount(accountName, upToDate) {
+  return (state.transactions || [])
+    .filter((tx) =>
+      tx.status === "za pregled"
+      && !tx.linkedExpenseId
+      && !tx.linkedIncomeId
+      && normalizeText(tx.account) === normalizeText(accountName)
+      && tx.date <= upToDate
+    )
+    .reduce((total, tx) => total + Number(tx.amount || 0), 0);
 }
 
 function normalizeText(value) {
@@ -5304,8 +5453,16 @@ function categorizeTransaction(description, type, amount) {
   if (userRule) {
     return { category: userRule.category, subcategory: userRule.subcategory || "", confidence: "high", source: `naučeno: ${userRule.keyword}` };
   }
+  if (amount > 0 && isInterestText(description)) {
+    return { category: "obresti", subcategory: "obresti", confidence: "high", source: "obresti" };
+  }
+  if (isPersonTransferText(description, type)) {
+    return amount > 0
+      ? { category: "prihodki", subcategory: "nakazilo osebe", confidence: "low", source: "nakazilo osebe" }
+      : { category: "za pregled", subcategory: "nakazilo osebi", confidence: "low", source: "nakazilo osebi" };
+  }
   const transferRule = matchRule(text, [
-    rule("interni transfer", "banka -> Revolut", "high", "apple pay top-up", "apple pay topup", "revolut top-up", "revolut topup", "card top-up", "card topup"),
+    rule("interni transfer", "banka -> Revolut", "high", "apple pay top-up", "apple pay topup", "apple pay deposit", "deposit by", "revolut top-up", "revolut topup", "card top-up", "card topup"),
     rule("interni transfer", "med računi", "low", "revolut transfer", "top-up", "top up", "topup", "bank transfer", "transfer", "nakazilo", "sepa", "to own account", "from own account", "savings", "varčevalni račun"),
     rule("gotovina", "dvig gotovine", "high", "atm", "bankomat", "cash withdrawal", "dvig gotovine", "withdrawal"),
   ]);
@@ -5330,7 +5487,9 @@ function categorizeTransaction(description, type, amount) {
     rule("davki", "globe", "high", "globa", "kazen"),
     rule("davki", "upravne takse", "high", "upravna taksa"),
     rule("gorivo", "bencinski servis", "high", "petrol", "omv", "shell", "mol", "ina", "eni", "agip", "tifon", "q max", "bs", "bencinski servis", "gas station", "service station", "fuel", "diesel", "petrol station"),
-    rule("hrana", "živila", "high", "spar", "interspar", "mercator", "lidl", "hofer", "eurospin", "tuš", "tus", "e.leclerc", "leclerc", "jager", "fama", "mlinotest", "pekarna", "bakery", "market", "supermarket", "grocery", "živila", "zivila", "mesnica", "ribarnica"),
+    rule("hrana", "živila", "high", "spar", "interspar", "mercator", "lidl", "hofer", "plodine", "konzum", "kaufland", "eurospin", "tuš", "tus", "e.leclerc", "leclerc", "jager", "fama", "mlinotest", "pekarna", "bakery", "market", "supermarket", "grocery", "živila", "zivila", "mesnica", "ribarnica"),
+    rule("kozmetika", "drogerija", "high", "drogerie", "drogerija", "muller", "douglas", "sephora", "notino", "lush", "rossmann", "parfumerija", "parfumeri", "cosmetics", "kozmetika", "kozmeticn"),
+    rule("kozmetika", "storitve", "high", "frizer", "frizerski", "barber", "manikura", "pedikura", "beauty salon", "kozmeticni salon"),
     rule("restavracije/kava", "gostinstvo", "high", "mcdonald", "burger king", "kfc", "subway", "wolt", "glovo", "ehrana", "bolt food", "restaurant", "restavracija", "gostilna", "pizzeria", "pizzerija", "kebab", "sushi", "grill", "fast food", "slaščičarna", "okrepčevalnica"),
     rule("restavracije/kava", "gostinstvo", "medium", "bar", "cafe", "café", "coffee", "kavarna", "bistro", "pub"),
     rule("stanovanje", "najemnina", "high", "najemnina", "rent"),
@@ -5389,9 +5548,17 @@ function rule(category, subcategory, confidence, ...keywords) {
   return { category, subcategory, confidence, keywords, source: "sistemsko pravilo" };
 }
 
+// Short keywords like "ina", "bar" or "mol" must match a whole word, otherwise "Marina" would be fuel.
+function textHasKeyword(normalizedText, keyword) {
+  const needle = normalizeText(keyword);
+  if (needle.length > 3) return normalizedText.includes(needle);
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`).test(normalizedText);
+}
+
 function matchRule(text, rules) {
   const normalized = normalizeText(text);
-  const matched = rules.find((item) => item.keywords.some((keyword) => normalized.includes(normalizeText(keyword))));
+  const matched = rules.find((item) => item.keywords.some((keyword) => textHasKeyword(normalized, keyword)));
   return matched ? { category: matched.category, subcategory: matched.subcategory, confidence: matched.confidence, source: matched.source } : null;
 }
 
@@ -5459,11 +5626,41 @@ function importedSavingsTransfer(tx, sourceLabel, importId) {
   return transfer;
 }
 
+const REVOLUT_SAVINGS_KEY = "revolut_varcevanje";
+const REVOLUT_SAVINGS_NAME = "Revolut varčevanje";
+
+// Revolut exports savings ("Deposit", vaults, pockets) in the same CSV as the main account ("Current").
+function isSavingsProduct(product) {
+  return /(deposit|savings|vault|pocket|varcevanj)/.test(normalizeText(product));
+}
+
+function revolutSavingsAccount() {
+  return (state.accounts || []).find((account) => account.setupKey === REVOLUT_SAVINGS_KEY) || null;
+}
+
+function isPocketTransfer(tx) {
+  if (!normalizeText(tx.kind).includes("transfer")) return false;
+  return isSavingsProduct(tx.product) || /(savings|vault|pocket|varcevanj)/.test(normalizeText(tx.description));
+}
+
+function isInterestText(text) {
+  return /(interest paid|net interest|obresti)/.test(normalizeText(text));
+}
+
+// "Transfer from MIHA KERN" / "To Miha Kern" are payments from or to other people, not own-account moves.
+function isPersonTransferText(description, type) {
+  const text = normalizeText(description);
+  const kind = normalizeText(type);
+  const personPattern = /^transfer from /.test(text) || (/^to /.test(text) && kind.includes("transfer"));
+  if (!personPattern) return false;
+  return !/(own account|lastni racun|savings|vault|pocket|top-?up|revolut|between accounts|to self|from self|varcevaln|eur current)/.test(text);
+}
+
 function isBankToRevolutTransfer(tx) {
   const text = normalizeText(`${tx.description} ${tx.reference} ${tx.kind}`);
   const accountText = normalizeText(tx.account || "");
   const revolutSide = text.includes("revolut") || accountText.includes("revolut");
-  const topUp = /(apple pay top-?up|revolut top-?up|card top-?up|top-?up|topup)/.test(text);
+  const topUp = /(apple pay top-?up|apple pay deposit|deposit by|revolut top-?up|card top-?up|top-?up|topup)/.test(text);
   const bankTransfer = /(sepa|nakazilo|transfer|prenos|placilni nalog|bank transfer)/.test(text);
   return revolutSide && (topUp || bankTransfer);
 }
@@ -5585,7 +5782,7 @@ function hasOppositeImportTransfer(tx, rows, currentIndex) {
   if (!cents || !tx.date) return false;
   const currentText = normalizeText(`${tx.description} ${tx.reference} ${tx.kind}`);
   return (rows || []).some((row, index) => {
-    if (index === currentIndex) return false;
+    if (index === currentIndex || isSavingsProduct(readMapped(row, "product"))) return false;
     const amount = parseAmount(readMapped(row, "amount"));
     if (!amount || Math.sign(amount) === Math.sign(tx.amount)) return false;
     if (amountCents(amount) !== cents) return false;
@@ -5619,6 +5816,75 @@ function isDuplicateTransaction(tx) {
   }) === targetKey);
 }
 
+function ensureRevolutSavingsAccount() {
+  const existing = revolutSavingsAccount();
+  if (existing) return { account: existing, created: false };
+  const savingsRows = (importDraft.transactions || [])
+    .filter((tx) => isSavingsProduct(tx.product) && !["nepopolno", "preklicano"].includes(tx.status))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.index - b.index);
+  if (!savingsRows.length) return { account: null, created: false };
+  const first = savingsRows[0];
+  const firstBalance = String(readMapped(importDraft.rows[first.index], "balance") || "").trim();
+  const opening = firstBalance ? Math.round((parseAmount(firstBalance) - first.amount) * 100) / 100 : 0;
+  const account = {
+    id: crypto.randomUUID(),
+    name: REVOLUT_SAVINGS_NAME,
+    type: "varčevalni račun",
+    setupKey: REVOLUT_SAVINGS_KEY,
+    balance: opening,
+    note: "Ustvarjeno ob uvozu Revolut izpiska (varčevanje).",
+    updatedAt: new Date().toISOString(),
+  };
+  state.accounts = [...(state.accounts || []), account];
+  return { account, created: true };
+}
+
+// A visible ledger entry, so past months are not shifted when the live balance is corrected.
+function restoreBalanceAdjustment(adjustment) {
+  const impact = Number(adjustment?.balanceImpact || 0);
+  if (!adjustment?.adjustmentAccountId || !impact) return;
+  state.accounts = (state.accounts || []).map((account) =>
+    account.id === adjustment.adjustmentAccountId ? { ...account, balance: Number(account.balance || 0) - impact } : account
+  );
+}
+
+function reconcileWithStatement(balances, sourceLabel, importId) {
+  const adjustments = [];
+  const report = [];
+  for (const item of balances) {
+    const account = statementAccount(item.account);
+    if (!account) continue;
+    const pending = pendingReviewAmount(item.account, item.date);
+    const appBalance = Number(reconstructAccountsAsOf(item.date).find((row) => row.id === account.id)?.balance || 0) + pending;
+    const difference = Math.round((item.balance - appBalance) * 100) / 100;
+    report.push({ account: account.name, statement: item.balance, date: item.date, difference, pending });
+    if (Math.abs(difference) < 0.01) continue;
+    state.accounts = state.accounts.map((row) => (row.id === account.id ? { ...row, balance: Number(row.balance || 0) + difference } : row));
+    adjustments.push({
+      id: crypto.randomUUID(),
+      date: item.date,
+      description: `Uskladitev stanja z izpiskom (${account.name})`,
+      amount: difference,
+      currency: "EUR",
+      category: "interni transfer",
+      categoryGroup: categoryGroupFor("interni transfer"),
+      subcategory: "uskladitev stanja",
+      account: account.name,
+      type: "uskladitev",
+      status: "uskladitev",
+      source: sourceLabel,
+      confidence: "high",
+      importId,
+      fileName: importDraft.fileName,
+      note: `Stanje po izpisku ${money(item.balance)} na ${item.date}, v aplikaciji ${money(appBalance)}${pending ? ` (vključno z ${signed(pending)} transakcij za pregled)` : ""}.`,
+      balanceAdjustment: true,
+      adjustmentAccountId: account.id,
+      balanceImpact: difference,
+    });
+  }
+  return { adjustments, report };
+}
+
 function confirmImportDraft() {
   if (!importDraft) return;
   rebuildImportDraft();
@@ -5629,10 +5895,32 @@ function confirmImportDraft() {
   const expenseRows = [];
   let skippedDuplicates = 0;
   let skippedTransfers = 0;
+  const savings = ensureRevolutSavingsAccount();
   for (const tx of importDraft.transactions) {
     if (tx.status === "možen dvojnik") {
       skippedDuplicates++;
       continue;
+    }
+    if (tx.status === "preklicano" || tx.pocket === "paired") {
+      if (tx.pocket === "paired") skippedTransfers++;
+      continue;
+    }
+    if (tx.pocket === "create") {
+      const revolut = accountByCanonicalKey("revolut");
+      const toSavings = isSavingsProduct(tx.product) ? tx.amount > 0 : tx.amount < 0;
+      const pocketTransfer = importedManagedTransfer(
+        tx, sourceLabel, importId,
+        toSavings ? revolut : savings.account,
+        toSavings ? savings.account : revolut,
+        "Revolut ↔ varčevanje",
+        "Prenos med Revolut računom in varčevanjem."
+      );
+      if (pocketTransfer) {
+        pocketTransfer.importKey = transactionKey(tx);
+        transactionRows.push(pocketTransfer);
+        skippedTransfers++;
+        continue;
+      }
     }
     if (tx.status === "interni transfer" && isWithSaveTransfer(tx)) {
       const savingsTransfer = importedSavingsTransfer(tx, sourceLabel, importId);
@@ -5734,6 +6022,10 @@ function confirmImportDraft() {
     const saved = upsertExpense(row, false, { silent: true });
     if (saved.account && !saved.balanceAccountId) unmatchedAccountCount += 1;
   });
+  const reconciliation = importDraft.reconcile === false
+    ? { adjustments: [], report: [] }
+    : reconcileWithStatement(statementBalances(), sourceLabel, importId);
+  state.transactions = [...reconciliation.adjustments, ...state.transactions];
   state.importHistory = [{
     id: importId,
     importedAt: new Date().toISOString(),
@@ -5742,16 +6034,34 @@ function confirmImportDraft() {
     imported: incomeRows.length + expenseRows.length,
     skippedDuplicates,
     skippedTransfers,
-    transactionIds: transactionRows.map((row) => row.id),
+    transactionIds: [...transactionRows, ...reconciliation.adjustments].map((row) => row.id),
     incomeIds: incomeRows.map((row) => row.id),
     expenseIds: expenseRows.map((row) => row.id),
+    createdAccountIds: savings.created ? [savings.account.id] : [],
+    reconciliation: reconciliation.report,
   }, ...(state.importHistory || [])];
+  refreshClosedMonthsAfterCorrection(
+    [...new Map([...incomeRows, ...expenseRows, ...transactionRows, ...reconciliation.adjustments]
+      .map((row) => periodFromDate(row.date))
+      .filter((period) => period && monthClosure(period.month, period.year))
+      .map((period) => [period.key, period])).values()],
+    `Uvoz ${importDraft.fileName}`
+  );
   importDraft = null;
   save();
   render();
+  const messages = [];
+  if (savings.created) messages.push(`Ustvarjen je nov račun "${savings.account.name}".`);
+  reconciliation.report.forEach((item) => {
+    const pendingNote = item.pending ? ` Transakcije za pregled (${signed(item.pending)}) se bodo upoštevale, ko jih potrdiš.` : "";
+    messages.push(Math.abs(item.difference) < 0.01
+      ? `${item.account}: stanje se ujema z izpiskom (${money(item.statement)} na ${item.date}).${pendingNote}`
+      : `${item.account}: stanje usklajeno z izpiskom (${money(item.statement)} na ${item.date}), popravek ${signed(item.difference)}.${pendingNote}`);
+  });
   if (unmatchedAccountCount > 0) {
-    alert(`Opozorilo: ${unmatchedAccountCount} uvoženih vnosov ni bilo mogoče pripisati nobenemu računu (izbrani račun ne obstaja). Stanja teh računov se niso spremenila - preveri jih v seznamu transakcij.`);
+    messages.push(`Opozorilo: ${unmatchedAccountCount} uvoženih vnosov ni bilo mogoče pripisati nobenemu računu (izbrani račun ne obstaja). Stanja teh računov se niso spremenila - preveri jih v seznamu transakcij.`);
   }
+  if (messages.length) alert(messages.join("\n"));
 }
 
 function rememberSelectedRules(transactions) {
@@ -5805,9 +6115,20 @@ function undoLastImport() {
   (state.transactions || [])
     .filter((item) => transactionIds.has(item.id) && item.transferManaged)
     .forEach((item) => restoreTransferBalance(item));
+  (state.transactions || [])
+    .filter((item) => transactionIds.has(item.id) && item.balanceAdjustment)
+    .forEach((item) => restoreBalanceAdjustment(item));
+  (state.transactions || [])
+    .filter((item) => transactionIds.has(item.id))
+    .forEach((item) => {
+      if (item.linkedExpenseId) deleteExpenseRecord(item.linkedExpenseId);
+      if (item.linkedIncomeId) deleteIncomeRecord(item.linkedIncomeId);
+    });
   state.transactions = (state.transactions || []).filter((item) => !transactionIds.has(item.id));
-  state.incomes = state.incomes.filter((item) => !incomeIds.has(item.id));
+  incomeIds.forEach((id) => deleteIncomeRecord(id));
   expenseIds.forEach((id) => deleteExpenseRecord(id));
+  const createdAccountIds = new Set(last.createdAccountIds || []);
+  state.accounts = (state.accounts || []).filter((account) => !createdAccountIds.has(account.id));
   state.importHistory = rest;
   save();
   render();
@@ -6408,7 +6729,7 @@ function saveQuickEntry(values) {
 
 function duplicateTransaction(transactionId) {
   const tx = (state.transactions || []).find((item) => item.id === transactionId);
-  if (!tx) return;
+  if (!tx || tx.balanceAdjustment) return;
   if (tx.transferManaged) {
     upsertTransfer({ date: iso(currentYear, currentMonth, now.getDate()), description: tx.description, amount: tx.amount, fromAccountId: tx.fromAccountId, toAccountId: tx.toAccountId, note: tx.note || "" });
   } else if (Number(tx.amount || 0) < 0) {
@@ -6766,6 +7087,10 @@ function bind() {
   document.querySelectorAll("[data-edit]").forEach((btn) => btn.addEventListener("click", () => {
     const [collection, id] = btn.dataset.edit.split(":");
     const item = state[collection].find((row) => row.id === id);
+    if (collection === "transactions" && item?.balanceAdjustment) {
+      alert("Uskladitve stanja ni mogoče urejati. Če ni pravilna, jo izbriši - stanje računa se povrne.");
+      return;
+    }
     if (collection === "transactions" && item?.transferManaged) {
       openModal("transfers", "Prenos med računi", item);
       return;
@@ -6840,6 +7165,11 @@ function bind() {
   document.querySelectorAll("form[data-form]").forEach((form) => form.addEventListener("submit", (event) => {
     event.preventDefault();
     upsert(form.dataset.form, Object.fromEntries(new FormData(form).entries()));
+  }));
+  document.querySelectorAll("form[data-form] select[name='category']").forEach((select) => select.addEventListener("change", () => {
+    const group = select.form?.querySelector("select[name='categoryGroup']");
+    const next = categoryGroupFor(select.value);
+    if (group && [...group.options].some((item) => item.value === next)) group.value = next;
   }));
   document.querySelectorAll("[data-google-sheets-form]").forEach((form) => form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -6954,11 +7284,15 @@ function bind() {
     tx.rememberRule = checkbox.checked;
     render();
   }));
+  document.querySelectorAll("[data-import-reconcile]").forEach((checkbox) => checkbox.addEventListener("change", () => {
+    if (importDraft) importDraft.reconcile = checkbox.checked;
+  }));
   document.querySelectorAll("[data-review-category]").forEach((select) => select.addEventListener("change", () => {
     const id = select.dataset.reviewCategory;
     const existing = (state.transactions || []).find((item) => item.id === id);
     const type = existing && Number(existing.amount) < 0 ? "strošek" : "prihodek";
     upsertTransaction({ id, category: select.value, type });
+    refreshClosedMonthsAfterCorrection(affectedClosedPeriods(existing?.date, existing?.date), `Pregled transakcije "${existing?.description || "transakcija"}"`);
     save();
     render();
   }));
