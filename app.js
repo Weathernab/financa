@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "100";
+const APP_VERSION = "101";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -2065,7 +2065,7 @@ async function pushGoogleSheets({ confirmOverwrite = false, quiet = false } = {}
     if (freshness.isNewer) {
       if (!confirmOverwrite) {
         cloudAutoSyncPaused = true;
-        cloudStatus = { state: "error", message: `Google Sheets je novejši od te naprave (${formatSyncTime(freshness.updatedAt)}). Najprej klikni "Prenesi iz Sheets".` };
+        cloudStatus = { state: "error", message: cloudConflictMessage(freshness) };
         return false;
       }
       const overwrite = confirm(`Google Sheets je novejši od te naprave (${formatSyncTime(freshness.updatedAt)}). Vseeno prepišem Sheets s podatki iz te naprave?`);
@@ -2144,15 +2144,23 @@ async function remoteFreshness() {
     pendingSinceTime || (localUpdatedTime && syncedLocalTime && localUpdatedTime > syncedLocalTime + 1000)
   );
   const remoteAdvancedSinceSync = Boolean(remoteTime && (!syncedRemoteTime || remoteTime > syncedRemoteTime + 1000));
-  const remoteChangedAfterLocalEdit = Boolean(remoteAdvancedSinceSync && localUpdatedTime && remoteTime > localUpdatedTime + 1000);
+  // Any remote change this device has not pulled yet blocks an automatic push, even if the local edit is
+  // later: the push replaces the whole state and would silently drop the other device's changes.
   return {
     updatedAt: result.updatedAt || "",
     schemaVersion: remoteStateSchema(null, result),
     appVersion: result.appVersion || "",
     remoteAdvancedSinceSync,
     hasLocalChangesSinceSync,
-    isNewer: Boolean(remoteAdvancedSinceSync && (!hasLocalChangesSinceSync || remoteChangedAfterLocalEdit)),
+    conflict: Boolean(remoteAdvancedSinceSync && hasLocalChangesSinceSync),
+    isNewer: remoteAdvancedSinceSync,
   };
+}
+
+function cloudConflictMessage(freshness) {
+  return freshness.conflict
+    ? `Na drugi napravi so bile ${formatSyncTime(freshness.updatedAt)} shranjene spremembe, ki jih ta naprava še nima, tu pa imaš neposlane spremembe. Samodejna sinhronizacija je ustavljena, da se nič ne izgubi: izvozi JSON, nato izberi "Prenesi iz Sheets" (in ponovno vnesi spremembe s te naprave) ali "Pošlji v Sheets" (prepiše spremembe druge naprave).`
+    : `Google Sheets je novejši od te naprave (${formatSyncTime(freshness.updatedAt)}). Najprej klikni "Prenesi iz Sheets".`;
 }
 
 async function initializeGoogleSheetsSync() {
@@ -2175,7 +2183,7 @@ async function initializeGoogleSheetsSync() {
       const freshness = await remoteFreshness();
       if (freshness.isNewer) {
         cloudAutoSyncPaused = true;
-        cloudStatus = { state: "error", message: `Google Sheets je novejši od lokalnih sprememb (${formatSyncTime(freshness.updatedAt)}). Samodejno prepisovanje je ustavljeno.` };
+        cloudStatus = { state: "error", message: cloudConflictMessage(freshness) };
         render();
         return;
       }
@@ -2592,7 +2600,8 @@ function applyLiabilityReduction(expense) {
   if (!expense.linkedLiabilityId) return { linkedLiabilityId: "", liabilityImpact: 0 };
   const liability = (state.liabilities || []).find((item) => item.id === expense.linkedLiabilityId);
   if (!liability) return { linkedLiabilityId: "", liabilityImpact: 0 };
-  const impact = Math.abs(Number(expense.amount || 0));
+  // Only the part that actually reduced the debt is recorded, so deleting an overpayment restores the right amount.
+  const impact = Math.min(Math.abs(Number(expense.amount || 0)), Math.max(0, Number(liability.amount || 0)));
   const nextAmount = Math.max(0, Number(liability.amount || 0) - impact);
   const nextStatus = nextAmount <= 0.004 ? "plačano" : liability.status;
   const updated = {
@@ -3824,7 +3833,7 @@ function modernTransactionsTable(rows) {
         ? `<span class="pill confidence-${tx.confidence || "low"}">${confidenceLevels[tx.confidence] || "Nejasno"}</span><br><select data-review-category="${escapeAttr(tx.id)}">${importCategories.map((c) => option(c, tx.category)).join("")}</select>`
         : `<span class="pill">${escapeHtml(tx.category || "za pregled")}</span>${tx.subcategory ? `<br><small class="muted">${escapeHtml(tx.subcategory)}</small>` : ""}`}</td>
       <td>${escapeHtml(tx.account || "")}</td>
-      <td>${rowActionMenu("transactions", tx.id, { allowRule: !tx.transferManaged, allowDuplicate: true, allowRecurring: !tx.transferManaged })}</td>
+      <td>${rowActionMenu("transactions", tx.id, { allowRule: !tx.transferManaged && !tx.balanceAdjustment, allowDuplicate: !tx.balanceAdjustment, allowRecurring: !tx.transferManaged && !tx.balanceAdjustment })}</td>
     </tr>`).join("")}
   </tbody></table>`;
 }
@@ -3972,7 +3981,9 @@ function monthlyView() {
       <div><strong>${closure ? "Mesec je zaključen" : "Mesec še ni zaključen"}</strong><span>${closure ? `Zaključeno ${formatSyncTime(closure.closedAt)}. Analitične številke so zaklenjene.${closure.recalculatedAt ? ` Popravljeno ${formatSyncTime(closure.recalculatedAt)}.` : ""}` : "Zaključek shrani snapshot, komentar in budgete ter pripravi naslednji mesec."}</span></div>
       ${closure
         ? `<span class="sync-badge success">Zaklenjeno</span>${currentProfile.role === "admin" ? `<button class="button secondary" type="button" data-action="rebuild-month-closure">Osveži zaključek</button>` : ""}`
-        : `<button class="button" type="button" data-action="close-month">Zaključi mesec</button>`}
+        : isFutureMonth(filters.month, filters.year)
+          ? `<span class="sync-badge">Mesec se še ni začel</span>`
+          : `<button class="button" type="button" data-action="close-month">Zaključi mesec</button>`}
     </div>
     <section class="grid metrics" style="margin-top:14px">
       ${metricCard(["Prihodki", displayed.incomeTotal, monthLabel(filters.month, filters.year), "positive"])}
@@ -4045,8 +4056,12 @@ function monthlyBudgetView(month, year) {
   </div></section>`;
 }
 
+function isFutureMonth(month, year) {
+  return Number(year) > currentYear || (Number(year) === currentYear && Number(month) > currentMonth);
+}
+
 function openMonthCloseModal() {
-  if (monthClosure(filters.month, filters.year)) return;
+  if (monthClosure(filters.month, filters.year) || isFutureMonth(filters.month, filters.year)) return;
   modal = { collection: "closeMonth", title: "Zaključi mesec", item: { month: filters.month, year: filters.year } };
   render();
 }
@@ -4054,7 +4069,7 @@ function openMonthCloseModal() {
 function closeMonth(values) {
   const month = Number(modal?.item?.month || filters.month);
   const year = Number(modal?.item?.year || filters.year);
-  if (monthClosure(month, year)) return closeModal();
+  if (monthClosure(month, year) || isFutureMonth(month, year)) return closeModal();
   const data = monthlyData(month, year);
   const analytics = analyticsMonthlyData(month, year, { ignoreClosure: true });
   const reconstructed = reconstructNetWorthAsOf(month, year);
@@ -6714,7 +6729,7 @@ function saveQuickEntry(values) {
 
 function duplicateTransaction(transactionId) {
   const tx = (state.transactions || []).find((item) => item.id === transactionId);
-  if (!tx) return;
+  if (!tx || tx.balanceAdjustment) return;
   if (tx.transferManaged) {
     upsertTransfer({ date: iso(currentYear, currentMonth, now.getDate()), description: tx.description, amount: tx.amount, fromAccountId: tx.fromAccountId, toAccountId: tx.toAccountId, note: tx.note || "" });
   } else if (Number(tx.amount || 0) < 0) {
@@ -7277,6 +7292,7 @@ function bind() {
     const existing = (state.transactions || []).find((item) => item.id === id);
     const type = existing && Number(existing.amount) < 0 ? "strošek" : "prihodek";
     upsertTransaction({ id, category: select.value, type });
+    refreshClosedMonthsAfterCorrection(affectedClosedPeriods(existing?.date, existing?.date), `Pregled transakcije "${existing?.description || "transakcija"}"`);
     save();
     render();
   }));
