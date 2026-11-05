@@ -2847,6 +2847,224 @@ button:disabled {
   }
 }
 
+/* Transactions list */
+.tx-table td {
+  vertical-align: middle;
+}
+
+.tx-table .tx-date {
+  width: 70px;
+  color: var(--muted);
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.tx-table .tx-desc strong {
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.tx-table .tx-desc small,
+.tx-table .tx-category small {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+}
+
+.tx-table .tx-group,
+.tx-table .tx-account {
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.tx-table .tx-amount {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.tx-table .tx-desc .tx-mobile-meta {
+  display: none;
+}
+
+.tx-table .review-pick {
+  margin-top: 0;
+}
+
+.tx-table .review-pick select {
+  max-width: 220px;
+}
+
+.tx-table .tx-month td {
+  padding-top: 18px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.table-wrap .tx-table .tx-month td:last-child {
+  position: static;
+  width: auto;
+}
+
+.card-header .pill {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.tx-stats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.tx-stats span {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.tx-stats b {
+  color: var(--text);
+}
+
+.tx-stats .warning b {
+  color: var(--warning, #ffc857);
+}
+
+@media (max-width: 720px) {
+  .tx-table,
+  .tx-table tbody {
+    display: block;
+    min-width: 0;
+  }
+
+  .tx-table thead {
+    display: none;
+  }
+
+  .tx-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "desc amount"
+      "category menu";
+    align-items: center;
+    gap: 4px 10px;
+    padding: 12px 2px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .tx-table tr.review-row {
+    margin: 6px 0;
+    padding: 12px;
+    border: 1px solid rgba(255, 200, 87, 0.35);
+    border-radius: 10px;
+  }
+
+  .table-wrap .tx-table td,
+  .table-wrap .tx-table td:last-child {
+    position: static;
+    width: auto;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  .tx-table .tx-desc {
+    grid-area: desc;
+    min-width: 0;
+  }
+
+  .tx-table .tx-amount {
+    grid-area: amount;
+    align-self: start;
+  }
+
+  .tx-table .tx-date,
+  .tx-table .tx-group,
+  .tx-table .tx-account,
+  .tx-table .tx-desc small.muted {
+    display: none;
+  }
+
+  .tx-table .tx-desc .tx-mobile-meta {
+    display: block;
+    margin-top: 3px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .tx-table .tx-menu {
+    grid-area: menu;
+    justify-self: end;
+  }
+
+  .tx-table .tx-category {
+    grid-area: category;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .tx-table .tx-category small {
+    display: inline;
+    margin: 0;
+  }
+
+  .tx-table .tx-category .pill.confidence-low {
+    display: none;
+  }
+
+  .tx-table .review-pick {
+    display: flex;
+    width: 100%;
+  }
+
+  .tx-table .review-pick select {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+
+  .tx-table .tx-desc small {
+    margin-top: 2px;
+  }
+
+  .card-header:has(> .tx-stats) {
+    flex-wrap: wrap;
+  }
+
+  .card-header > h3 {
+    white-space: nowrap;
+  }
+
+  .tx-stats {
+    justify-content: flex-start;
+  }
+
+  .tx-table .tx-month {
+    display: block;
+    padding: 0;
+    border: 0;
+  }
+
+  .tx-table .tx-month td {
+    display: block;
+    padding: 18px 2px 4px;
+  }
+}
+
 .profile-admin,
 .goal-card {
   overflow: visible;

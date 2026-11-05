@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "106";
+const APP_VERSION = "107";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -3792,17 +3792,13 @@ function transactionsView() {
   const review = reviewTransactions();
   const ready = recentTransactions(200);
   const reviewCard = review.length
-    ? `<section class="card review-card"><div class="card-header"><div><h3>Za pregled</h3><p>Te transakcije potrebujejo tvojo potrditev kategorije.</p></div><span class="pill">${review.length} odprtih</span></div>${reviewReimbursements().length ? `<div class="card-body review-bulk"><button class="button" type="button" data-action="link-review-reimbursements">Poveži vračila z računi (${reviewReimbursements().length})</button></div>` : ""}<div class="card-body table-wrap">${modernTransactionsTable(review)}</div></section>`
+    ? `<section class="card review-card"><div class="card-header"><div><h3>Za pregled</h3><p>Te transakcije potrebujejo tvojo potrditev kategorije.</p></div><span class="pill">${review.length} odprtih</span></div>${reviewReimbursements().length ? `<div class="card-body review-bulk"><button class="button" type="button" data-action="link-review-reimbursements">Poveži vračila z računi (${reviewReimbursements().length})</button></div>` : ""}<div class="card-body table-wrap">${modernTransactionsTable(review, { review: true })}</div></section>`
     : "";
   const topCards = [reviewCard, possibleReimbursementsCard(), unusualExpensesCard()].filter(Boolean);
+  const transferCount = (state.transactions || []).filter((t) => t.status === "interni transfer").length;
   return `${topCards.join(`<div style="height:18px"></div>`)}
-  <section class="grid metrics"${topCards.length ? ` style="margin-top:18px"` : ""}>
-    ${countCard("Za pregled", review.length, "potrebuje ročno odločitev", "warning")}
-    ${countCard("Uvoženo", state.transactions.length, "vse transakcije", "positive")}
-    ${countCard("Transferji", state.transactions.filter((t) => t.status === "interni transfer").length, "ne vplivajo na porabo", "warning")}
-  </section>
   ${hasRecurringRules() ? recurringTransactionsView() : ""}
-  <section class="card" style="margin-top:18px"><div class="card-header"><h3>Vse transakcije</h3></div><div class="card-body table-wrap">${modernTransactionsTable(ready)}</div></section>`;
+  <section class="card"${topCards.length || hasRecurringRules() ? ` style="margin-top:18px"` : ""}><div class="card-header"><h3>Vse transakcije</h3><div class="tx-stats"><span><b>${(state.transactions || []).length}</b> skupaj</span>${review.length ? `<span class="warning"><b>${review.length}</b> za pregled</span>` : ""}${transferCount ? `<span><b>${transferCount}</b> ${["prenosov", "prenos", "prenosa", "prenosi", "prenosi"][transferCount % 100 < 5 ? transferCount % 100 : 0]}</span>` : ""}</div></div><div class="card-body table-wrap">${modernTransactionsTable(ready, { monthHeaders: true })}</div></section>`;
 }
 
 function hasRecurringRules() {
@@ -4252,21 +4248,48 @@ function recentTransactions(limit = 10) {
   return [...(state.transactions || [])].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, limit);
 }
 
-function modernTransactionsTable(rows) {
+// Income categories have no expense group; show them as income instead of "Drugo / za pregled".
+function transactionGroupLabel(tx) {
+  if (Number(tx.amount) > 0 && incomeCategories.includes(tx.category) && !expenseCategories.includes(tx.category)) return "Prihodki";
+  return tx.categoryGroup || categoryGroupFor(tx.category);
+}
+
+function shortDate(value) {
+  const [year, month, day] = String(value || "").split("-").map(Number);
+  if (!year || !month || !day) return escapeHtml(value || "");
+  return year === currentYear ? `${day}. ${month}.` : `${day}. ${month}. ${year}`;
+}
+
+// review: rows of the "Za pregled" card get the category picker; elsewhere review rows only show their status.
+function modernTransactionsTable(rows, { review = false, monthHeaders = false } = {}) {
   if (!rows.length) return `<div class="empty">Ni transakcij.</div>`;
-  return `<table><thead><tr><th>Ime</th><th>Znesek</th><th>Datum</th><th>Skupina</th><th>Kategorija</th><th>Račun</th><th></th></tr></thead><tbody>
-    ${rows.map((tx) => `<tr class="${tx.status === "za pregled" ? "review-row" : ""}">
-      <td>${escapeHtml(tx.description || "")}${tx.status && !["pripravljeno", "za pregled"].includes(tx.status) ? ` <span class="pill status-pill">${escapeHtml(tx.status)}</span>` : ""}<br><small class="muted">${escapeHtml(tx.source || "")} ${tx.confidence ? "· " + (confidenceLevels[tx.confidence] || tx.confidence) : ""}</small></td>
-      <td><strong class="${Number(tx.amount) < 0 ? "negative" : "positive"}">${money(Number(tx.amount || 0))}</strong></td>
-      <td>${escapeHtml(tx.date || "")}</td>
-      <td>${escapeHtml(tx.categoryGroup || categoryGroupFor(tx.category))}</td>
-      <td>${tx.status === "za pregled"
-        ? `<span class="pill confidence-${tx.confidence || "low"}">${confidenceLevels[tx.confidence] || "Nejasno"}</span><br><span class="review-pick"><select data-review-category="${escapeAttr(tx.id)}">${visibleCategories(importCategories, tx.category).map((c) => option(c, tx.category)).join("")}</select>${tx.category && tx.category !== "za pregled" ? `<button class="button secondary review-confirm" type="button" title="Potrdi kategorijo" aria-label="Potrdi kategorijo" data-review-confirm="${escapeAttr(tx.id)}">✓</button>` : ""}</span>`
-        : `<span class="pill">${escapeHtml(tx.category || "za pregled")}</span>${tx.subcategory ? `<br><small class="muted">${escapeHtml(tx.subcategory)}</small>` : ""}`}</td>
-      <td>${escapeHtml(tx.account || "")}</td>
-      <td>${rowActionMenu("transactions", tx.id, { allowRule: !tx.transferManaged && !tx.balanceAdjustment, allowDuplicate: !tx.balanceAdjustment, allowRecurring: !tx.transferManaged && !tx.balanceAdjustment })}</td>
-    </tr>`).join("")}
-  </tbody></table>`;
+  let lastMonth = "";
+  const body = rows.map((tx) => {
+    const amount = Number(tx.amount || 0);
+    const pending = tx.status === "za pregled";
+    const statusPill = tx.status && !["pripravljeno", "za pregled", tx.category].includes(tx.status) ? `<span class="pill status-pill">${escapeHtml(tx.status)}</span>` : "";
+    const confidence = pending || tx.confidence === "low" ? ` · ${escapeHtml(confidenceLevels[tx.confidence] || "Nejasno")}` : "";
+    const category = review && pending
+      ? `<span class="review-pick"><select data-review-category="${escapeAttr(tx.id)}" aria-label="Kategorija">${visibleCategories(importCategories, tx.category).map((c) => option(c, tx.category)).join("")}</select>${tx.category && tx.category !== "za pregled" ? `<button class="button secondary review-confirm" type="button" title="Potrdi kategorijo" aria-label="Potrdi kategorijo" data-review-confirm="${escapeAttr(tx.id)}">✓</button>` : ""}</span>`
+      : `<span class="pill${pending ? " warning" : ""}">${escapeHtml(pending ? "za pregled" : tx.category || "za pregled")}</span>${tx.subcategory && !pending ? `<small class="muted">${escapeHtml(tx.subcategory)}</small>` : ""}`;
+    const monthKey = String(tx.date || "").slice(0, 7);
+    let header = "";
+    if (monthHeaders && monthKey !== lastMonth) {
+      lastMonth = monthKey;
+      const [year, month] = monthKey.split("-").map(Number);
+      header = year && month ? `<tr class="tx-month"><td colspan="7">${escapeHtml(monthLabel(month, year))}</td></tr>` : "";
+    }
+    return `${header}<tr class="${pending ? "review-row" : ""}">
+      <td class="tx-date" title="${escapeAttr(tx.date || "")}">${shortDate(tx.date)}</td>
+      <td class="tx-desc"><strong>${escapeHtml(tx.description || "")}</strong> ${statusPill}<small class="muted">${escapeHtml(tx.source || "")}${confidence}</small><small class="tx-mobile-meta">${shortDate(tx.date)} · ${escapeHtml(tx.account || "")} · ${escapeHtml(transactionGroupLabel(tx))}</small></td>
+      <td class="tx-group">${escapeHtml(transactionGroupLabel(tx))}</td>
+      <td class="tx-category">${category}</td>
+      <td class="tx-account">${escapeHtml(tx.account || "")}</td>
+      <td class="tx-amount"><strong class="${amount < 0 ? "negative" : "positive"}">${money(amount)}</strong></td>
+      <td class="tx-menu">${rowActionMenu("transactions", tx.id, { allowRule: !tx.transferManaged && !tx.balanceAdjustment, allowDuplicate: !tx.balanceAdjustment, allowRecurring: !tx.transferManaged && !tx.balanceAdjustment })}</td>
+    </tr>`;
+  }).join("");
+  return `<table class="tx-table"><thead><tr><th>Datum</th><th>Opis</th><th>Skupina</th><th>Kategorija</th><th>Račun</th><th class="tx-amount">Znesek</th><th></th></tr></thead><tbody>${body}</tbody></table>`;
 }
 
 function transactionsTable(rows) {
