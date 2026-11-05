@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "103";
+const APP_VERSION = "104";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -49,6 +49,34 @@ const expenseCategoryGroupMap = {
   drugo: "Drugo / za pregled",
 };
 const importCategories = [...new Set([...expenseCategories, ...incomeCategories, "transfer"])];
+// Categories the app itself relies on; they cannot be hidden.
+const ALWAYS_VISIBLE_CATEGORIES = new Set(["za pregled", "interni transfer", "transfer", "drugo", "prihodki"]);
+
+function hiddenCategorySet() {
+  let hidden = state?.settings?.hiddenCategories || [];
+  if (typeof hidden === "string") {
+    try { hidden = JSON.parse(hidden); } catch { hidden = []; }
+  }
+  return new Set((Array.isArray(hidden) ? hidden : []).filter((category) => !ALWAYS_VISIBLE_CATEGORIES.has(category)));
+}
+
+function isCategoryHidden(category) {
+  return hiddenCategorySet().has(category);
+}
+
+// Hidden categories disappear from pickers, but a value that is already in use stays selectable.
+function visibleCategories(list, current = "") {
+  const hidden = hiddenCategorySet();
+  return list.filter((category) => !hidden.has(category) || category === current);
+}
+
+function setCategoryHidden(category, hidden) {
+  if (ALWAYS_VISIBLE_CATEGORIES.has(category)) return;
+  const next = hiddenCategorySet();
+  if (hidden) next.add(category);
+  else next.delete(category);
+  state.settings.hiddenCategories = [...next];
+}
 const confidenceLevels = { high: "Visoko zaupanje", medium: "Srednje zaupanje", low: "Nizko zaupanje", manual: "Ročno potrjeno" };
 const accountTypes = ["glavni bančni račun", "Revolut", "gotovina", "varčevalni račun", "IBKR", "crypto", "vozilo", "drugo"];
 const investmentTypes = ["ETF", "delnice", "crypto", "obveznice", "cash", "drugo"];
@@ -3685,8 +3713,8 @@ function monthOptionsHtml(selectedMonth) {
 
 function filterHtml(collection) {
   const extra = collection === "incomes"
-    ? `<label>Kategorija<select data-filter="category"><option value="">Vse</option>${incomeCategories.map((c) => option(c, filters.category)).join("")}</select></label><label>Vir<input data-filter="source" value="${escapeAttr(filters.source)}"></label>`
-    : `<label>Kategorija<select data-filter="category"><option value="">Vse</option>${expenseCategories.map((c) => option(c, filters.category)).join("")}</select></label><label>Račun<input data-filter="account" value="${escapeAttr(filters.account)}"></label>`;
+    ? `<label>Kategorija<select data-filter="category"><option value="">Vse</option>${visibleCategories(incomeCategories, filters.category).map((c) => option(c, filters.category)).join("")}</select></label><label>Vir<input data-filter="source" value="${escapeAttr(filters.source)}"></label>`
+    : `<label>Kategorija<select data-filter="category"><option value="">Vse</option>${visibleCategories(expenseCategories, filters.category).map((c) => option(c, filters.category)).join("")}</select></label><label>Račun<input data-filter="account" value="${escapeAttr(filters.account)}"></label>`;
   return `<div class="card"><div class="card-body filters">
     <label>Mesec<select data-filter="month">${monthOptionsHtml(filters.month)}</select></label>
     <label>Leto<input type="number" data-filter="year" value="${filters.year}"></label>
@@ -4055,7 +4083,7 @@ function modernTransactionsTable(rows) {
       <td>${escapeHtml(tx.date || "")}</td>
       <td>${escapeHtml(tx.categoryGroup || categoryGroupFor(tx.category))}</td>
       <td>${tx.status === "za pregled"
-        ? `<span class="pill confidence-${tx.confidence || "low"}">${confidenceLevels[tx.confidence] || "Nejasno"}</span><br><span class="review-pick"><select data-review-category="${escapeAttr(tx.id)}">${importCategories.map((c) => option(c, tx.category)).join("")}</select>${tx.category && tx.category !== "za pregled" ? `<button class="button secondary review-confirm" type="button" title="Potrdi kategorijo" aria-label="Potrdi kategorijo" data-review-confirm="${escapeAttr(tx.id)}">✓</button>` : ""}</span>`
+        ? `<span class="pill confidence-${tx.confidence || "low"}">${confidenceLevels[tx.confidence] || "Nejasno"}</span><br><span class="review-pick"><select data-review-category="${escapeAttr(tx.id)}">${visibleCategories(importCategories, tx.category).map((c) => option(c, tx.category)).join("")}</select>${tx.category && tx.category !== "za pregled" ? `<button class="button secondary review-confirm" type="button" title="Potrdi kategorijo" aria-label="Potrdi kategorijo" data-review-confirm="${escapeAttr(tx.id)}">✓</button>` : ""}</span>`
         : `<span class="pill">${escapeHtml(tx.category || "za pregled")}</span>${tx.subcategory ? `<br><small class="muted">${escapeHtml(tx.subcategory)}</small>` : ""}`}</td>
       <td>${escapeHtml(tx.account || "")}</td>
       <td>${rowActionMenu("transactions", tx.id, { allowRule: !tx.transferManaged && !tx.balanceAdjustment, allowDuplicate: !tx.balanceAdjustment, allowRecurring: !tx.transferManaged && !tx.balanceAdjustment })}</td>
@@ -5098,7 +5126,7 @@ function importPreviewTable() {
     <td class="it-meta">${escapeHtml(tx.currency)}</td>
     <td class="it-meta">${escapeHtml(tx.kind)}</td>
     <td class="it-meta">${escapeHtml(tx.categoryGroup || categoryGroupFor(tx.category))}</td>
-    <td class="it-category"><select data-import-category="${tx.index}" aria-label="Kategorija">${importCategories.map((c) => option(c, tx.category)).join("")}</select></td>
+    <td class="it-category"><select data-import-category="${tx.index}" aria-label="Kategorija">${visibleCategories(importCategories, tx.category).map((c) => option(c, tx.category)).join("")}</select></td>
     <td class="it-confidence"><span class="pill confidence-${tx.confidence}">${confidenceLevels[tx.confidence] || tx.confidence}</span><br><small>${escapeHtml(tx.ruleSource || "")}</small></td>
     <td class="it-remember${tx.manualChanged ? "" : " is-empty"}">${tx.manualChanged ? `<label class="remember-rule"><input type="checkbox" data-remember-rule="${tx.index}" ${tx.rememberRule ? "checked" : ""}> Zapomni</label>` : `<span class="muted">-</span>`}</td>
     <td class="it-meta">${escapeHtml(tx.account)}</td>
@@ -5688,7 +5716,7 @@ function categorizeTransaction(description, type, amount) {
   }
   if (isPersonTransferText(description, type)) {
     return amount > 0
-      ? { category: REIMBURSEMENT_CATEGORY, subcategory: "nakazilo osebe", confidence: "low", source: "nakazilo osebe" }
+      ? { category: isCategoryHidden(REIMBURSEMENT_CATEGORY) ? "prihodki" : REIMBURSEMENT_CATEGORY, subcategory: "nakazilo osebe", confidence: "low", source: "nakazilo osebe" }
       : { category: "za pregled", subcategory: "nakazilo osebi", confidence: "low", source: "nakazilo osebi" };
   }
   const transferRule = matchRule(text, [
@@ -5790,7 +5818,8 @@ function textHasKeyword(normalizedText, keyword) {
 
 function matchRule(text, rules) {
   const normalized = normalizeText(text);
-  const matched = rules.find((item) => item.keywords.some((keyword) => textHasKeyword(normalized, keyword)));
+  const hidden = hiddenCategorySet();
+  const matched = rules.find((item) => !hidden.has(item.category) && item.keywords.some((keyword) => textHasKeyword(normalized, keyword)));
   return matched ? { category: matched.category, subcategory: matched.subcategory, confidence: matched.confidence, source: matched.source } : null;
 }
 
@@ -6433,9 +6462,48 @@ function settingsDataView() {
   </div></div>`;
 }
 
+function categoryUsageCounts() {
+  const counts = new Map();
+  for (const item of [...(state.expenses || []), ...(state.incomes || [])]) {
+    if (item.category) counts.set(item.category, (counts.get(item.category) || 0) + 1);
+  }
+  return counts;
+}
+
+function categoryVisibilityView() {
+  const hidden = hiddenCategorySet();
+  const counts = categoryUsageCounts();
+  const chip = (category) => {
+    const locked = ALWAYS_VISIBLE_CATEGORIES.has(category);
+    const count = counts.get(category) || 0;
+    return `<label class="category-toggle${hidden.has(category) ? " off" : ""}${locked ? " locked" : ""}" title="${locked ? "To kategorijo aplikacija potrebuje, zato je ni mogoče skriti." : ""}">
+      <input type="checkbox" data-category-visibility="${escapeAttr(category)}" ${hidden.has(category) ? "" : "checked"} ${locked ? "disabled" : ""}>
+      <span>${escapeHtml(category)}</span><small>${count ? `${count}×` : "neuporabljena"}</small>
+    </label>`;
+  };
+  const expenseGroups = expenseCategoryGroups
+    .map((group) => [group, expenseCategories.filter((category) => categoryGroupFor(category) === group)])
+    .filter(([, categories]) => categories.length);
+  const incomeList = incomeCategories.filter((category) => !expenseCategories.includes(category));
+  return `<div class="card">
+    <div class="card-header">
+      <div><h3>Vidnost kategorij</h3><p>Izklopi kategorije, ki jih ne uporabljaš - izginejo iz izbirnih seznamov in samodejnega razvrščanja pri uvozu. Obstoječi vnosi ostanejo nespremenjeni in se še vedno štejejo v analitiko.</p></div>
+      <span class="pill">${hidden.size ? `${hidden.size} ${["skritih", "skrita", "skriti", "skrite", "skrite"][hidden.size % 100 < 5 ? hidden.size % 100 : 0]}` : "vse vidne"}</span>
+    </div>
+    <div class="card-body">
+      <div class="category-visibility">
+        ${expenseGroups.map(([group, categories]) => `<section><strong>${escapeHtml(group)}</strong><div class="category-toggles">${categories.map(chip).join("")}</div></section>`).join("")}
+        <section><strong>Prihodki</strong><div class="category-toggles">${incomeList.map(chip).join("")}</div></section>
+      </div>
+      ${hidden.size ? `<div class="actions" style="margin-top:14px"><button class="button secondary" type="button" data-action="show-all-categories">Pokaži vse kategorije</button></div>` : ""}
+    </div>
+  </div>`;
+}
+
 function settingsCategoriesView() {
   const plan = categoryMigrationPlan();
-  return `<div class="card">
+  return `${categoryVisibilityView()}
+  <div class="card">
     <div class="card-header">
       <div><h3>Kategorije stroškov</h3><p>Manj glavnih skupin, podrobnosti ostanejo v kategorijah in podkategorijah.</p></div>
       <span class="pill">${expenseCategoryGroups.length} skupin</span>
@@ -6869,7 +6937,7 @@ function reimbursementFieldsHtml(current) {
   const linked = decided && current.reimbursedExpenseId ? (state.expenses || []).find((item) => item.id === current.reimbursedExpenseId) : null;
   if (linked && !candidates.some((item) => item.id === linked.id)) candidates.unshift(linked);
   const expenseOption = (expense) => `<option value="${escapeAttr(expense.id)}" ${expense.id === selected ? "selected" : ""}>${escapeHtml(expense.date)} · ${escapeHtml(expense.name || "strošek")} · ${money(Math.abs(Number(expense.amount || 0)))}</option>`;
-  const categories = expenseCategories.filter((category) => !REIMBURSEMENT_IGNORED_EXPENSE_CATEGORIES.has(category));
+  const categories = visibleCategories(expenseCategories, current.reimbursementCategory).filter((category) => !REIMBURSEMENT_IGNORED_EXPENSE_CATEGORIES.has(category));
   return `<div class="reimbursement-fields full" data-reimbursement-fields ${active ? "" : "hidden"}>
     <p class="settings-note">Vračilo ni prihodek: zmanjša strošek, ki ga pokriva. Stanje na računu se ne spremeni.</p>
     <label>Za kateri strošek?<select name="reimbursedExpenseId" ${active ? "" : "disabled"}>
@@ -6949,7 +7017,7 @@ function quickEntryModalHtml() {
 
 function quickEntryCategories(kind) {
   const source = kind === "prihodek" ? incomeCategories : expenseCategories;
-  return source.filter((category) => !["interni transfer", "za pregled"].includes(category));
+  return visibleCategories(source).filter((category) => !["interni transfer", "za pregled"].includes(category));
 }
 
 function updateQuickEntryCategories(form, preferredCategory = "") {
@@ -7074,7 +7142,10 @@ function defaults(collection) {
 function fieldHtml(name, type, label, value = "", options = []) {
   const cls = type === "textarea" ? "full" : "";
   const required = ["date", "name", "description", "amount", "account"].includes(name) ? "required" : "";
-  if (type === "select") return `<label class="${cls}">${label}<select name="${name}" ${required}>${options.map((o) => option(o, value)).join("")}</select></label>`;
+  if (type === "select") {
+    const shown = name === "category" ? visibleCategories(options, value) : options;
+    return `<label class="${cls}">${label}<select name="${name}" ${required}>${shown.map((o) => option(o, value)).join("")}</select></label>`;
+  }
   if (type === "account-select") {
     const accounts = (state.accounts || []).filter(isSpendableAccount);
     const hasCurrent = accounts.some((account) => account.name === value);
@@ -7328,6 +7399,16 @@ function bind() {
   document.querySelectorAll("[data-row-menu]").forEach((btn) => btn.addEventListener("click", () => {
     rowMenuOpen = rowMenuOpen === btn.dataset.rowMenu ? "" : btn.dataset.rowMenu;
     addMenuOpen = false;
+    render();
+  }));
+  document.querySelectorAll("[data-category-visibility]").forEach((checkbox) => checkbox.addEventListener("change", () => {
+    setCategoryHidden(checkbox.dataset.categoryVisibility, !checkbox.checked);
+    save();
+    render();
+  }));
+  document.querySelectorAll("[data-action='show-all-categories']").forEach((btn) => btn.addEventListener("click", () => {
+    state.settings.hiddenCategories = [];
+    save();
     render();
   }));
   document.querySelectorAll("[data-settings-tab]").forEach((btn) => btn.addEventListener("click", () => {
