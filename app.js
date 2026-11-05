@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "104";
+const APP_VERSION = "105";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -2349,13 +2349,13 @@ function closedPeriodsForDates(dates) {
 
 // Expenses a reimbursement most likely belongs to, best first. A friend usually pays back an equal
 // share of a bill paid in the weeks before, so a bill that is a multiple of the amount ranks high.
-function reimbursementCandidates(income, limit = 25) {
+function reimbursementCandidates(income, limit = 25, extraExpenses = []) {
   const date = income?.date || iso(currentYear, currentMonth, now.getDate());
   const amount = Math.abs(Number(income?.amount || 0));
   const from = shiftIsoDate(date, -60);
   const to = shiftIsoDate(date, 3);
   const allocations = reimbursementAllocations(income?.id || "");
-  return (state.expenses || [])
+  return [...(state.expenses || []), ...extraExpenses]
     .filter((expense) =>
       expense.date >= from
       && expense.date <= to
@@ -3738,12 +3738,26 @@ function table(collection, rows, columns) {
   return `<table><thead><tr>${columns.map((c) => `<th>${c[0]}</th>`).join("")}<th></th></tr></thead><tbody>${rows.map((row) => `<tr>${columns.map(([, renderCell]) => `<td>${renderCell(row)}</td>`).join("")}<td>${rowActionMenu(collection, row.id)}</td></tr>`).join("")}</tbody></table>`;
 }
 
+function reimbursementIncomeForRow(collection, id) {
+  if (collection === "incomes") {
+    const income = (state.incomes || []).find((item) => item.id === id);
+    return isReimbursementIncome(income) ? income.id : "";
+  }
+  if (collection === "transactions") {
+    const tx = (state.transactions || []).find((item) => item.id === id);
+    return tx?.category === REIMBURSEMENT_CATEGORY && tx.linkedIncomeId ? tx.linkedIncomeId : "";
+  }
+  return "";
+}
+
 function rowActionMenu(collection, id, { allowRule = false, allowDuplicate = false, allowRecurring = false } = {}) {
   const key = `${collection}:${id}`;
+  const linkIncomeId = rowMenuOpen === key ? reimbursementIncomeForRow(collection, id) : "";
   return `<div class="row-menu-wrap">
     <button class="icon-btn row-menu-trigger" type="button" title="Več možnosti" aria-label="Več možnosti" data-row-menu="${escapeAttr(key)}">${icon("more")}</button>
     ${rowMenuOpen === key ? `<div class="row-menu">
       <button type="button" data-edit="${escapeAttr(key)}">Uredi</button>
+      ${linkIncomeId ? `<button type="button" data-link-reimbursement="${escapeAttr(linkIncomeId)}">Poveži z računom</button>` : ""}
       ${allowDuplicate ? `<button type="button" data-duplicate-transaction="${escapeAttr(id)}">Podvoji</button>` : ""}
       ${allowRecurring ? `<button type="button" data-recurring-from-transaction="${escapeAttr(id)}">Nastavi kot ponavljajoče</button>` : ""}
       ${allowRule ? `<button type="button" data-rule-from-transaction="${escapeAttr(id)}">Zapomni pravilo</button>` : ""}
@@ -3775,7 +3789,7 @@ function transactionsView() {
   const review = reviewTransactions();
   const ready = recentTransactions(200);
   const reviewCard = review.length
-    ? `<section class="card review-card"><div class="card-header"><div><h3>Za pregled</h3><p>Te transakcije potrebujejo tvojo potrditev kategorije.</p></div><span class="pill">${review.length} odprtih</span></div><div class="card-body table-wrap">${modernTransactionsTable(review)}</div></section>`
+    ? `<section class="card review-card"><div class="card-header"><div><h3>Za pregled</h3><p>Te transakcije potrebujejo tvojo potrditev kategorije.</p></div><span class="pill">${review.length} odprtih</span></div>${reviewReimbursements().length ? `<div class="card-body review-bulk"><button class="button" type="button" data-action="link-review-reimbursements">Poveži vračila z računi (${reviewReimbursements().length})</button></div>` : ""}<div class="card-body table-wrap">${modernTransactionsTable(review)}</div></section>`
     : "";
   const topCards = [reviewCard, possibleReimbursementsCard(), unusualExpensesCard()].filter(Boolean);
   return `${topCards.join(`<div style="height:18px"></div>`)}
@@ -3857,6 +3871,153 @@ function createRecurringTransaction(ruleId) {
 
 function countCard(label, value, hint, tone) {
   return `<article class="card metric"><div class="metric-top"><span>${label}</span><i class="metric-icon ${tone}">${metricIcons[label] || "TR"}</i></div><strong class="${tone}">${NUMBER.format(value)}</strong><small>${hint}</small></article>`;
+}
+
+function reviewReimbursements() {
+  return (state.transactions || []).filter((tx) => tx.status === "za pregled" && tx.category === REIMBURSEMENT_CATEGORY && Number(tx.amount) > 0);
+}
+
+// ---- Dialog for choosing the bill a payback covers ----
+
+function reimbursementDialogEntry(entry) {
+  if (!entry) return null;
+  if (entry.kind === "income") {
+    const income = (state.incomes || []).find((item) => item.id === entry.id);
+    return income ? { ...entry, income, payback: { id: income.id, date: income.date, amount: Math.abs(Number(income.amount || 0)), name: income.name } } : null;
+  }
+  const tx = (state.transactions || []).find((item) => item.id === entry.id);
+  if (!tx) return null;
+  const income = tx.linkedIncomeId ? (state.incomes || []).find((item) => item.id === tx.linkedIncomeId) : null;
+  if (income) return { kind: "income", id: income.id, income, payback: { id: income.id, date: income.date, amount: Math.abs(Number(income.amount || 0)), name: income.name } };
+  return { ...entry, tx, payback: { id: "", date: tx.date, amount: Math.abs(Number(tx.amount || 0)), name: tx.description } };
+}
+
+// Bills a payback can cover: those it fits (bill not yet paid back in full) first, each group ordered
+// by how close the bill is in time to the payback.
+function reimbursementChoices(payback, limit = 40) {
+  const allocations = reimbursementAllocations(payback.id || "");
+  const from = shiftIsoDate(payback.date, -60);
+  const to = shiftIsoDate(payback.date, 7);
+  return (state.expenses || [])
+    .filter((expense) => expense.date >= from && expense.date <= to && Math.abs(Number(expense.amount || 0)) > 0 && !REIMBURSEMENT_IGNORED_EXPENSE_CATEGORIES.has(expense.category))
+    .map((expense) => {
+      const total = Math.abs(Number(expense.amount || 0));
+      const already = reimbursedAmount(expense.id, allocations);
+      const days = daysBetween(expense.date, payback.date);
+      return { expense, total, already, days, fits: total - already >= payback.amount - 0.01 };
+    })
+    .sort((a, b) => Number(b.fits) - Number(a.fits) || Math.abs(a.days) - Math.abs(b.days) || b.days - a.days)
+    .slice(0, limit);
+}
+
+function dayCountLabel(days) {
+  const n = Math.abs(days);
+  if (n === 0) return "isti dan";
+  const word = n % 100 === 1 ? "dan" : n % 100 === 2 ? "dneva" : "dni";
+  return `${n} ${word} ${days > 0 ? "prej" : "pozneje"}`;
+}
+
+function openReimbursementDialog(queue) {
+  const entries = queue.filter((entry) => reimbursementDialogEntry(entry));
+  if (!entries.length) return;
+  modal = { collection: "linkReimbursement", title: "Poveži vračilo", item: { queue: entries, position: 0 } };
+  rowMenuOpen = "";
+  render();
+}
+
+function reimbursementDialogHtml() {
+  const { queue, position } = modal.item;
+  const entry = reimbursementDialogEntry(queue[position]);
+  if (!entry) return "";
+  const { payback, income } = entry;
+  const choices = reimbursementChoices(payback);
+  const best = reimbursementCandidates({ ...payback, category: REIMBURSEMENT_CATEGORY }, 1)[0];
+  const suggestedId = best && best.score >= 20 ? best.expense.id : "";
+  const decided = Boolean(income && isReimbursementIncome(income) && income.reimbursedExpenseId !== undefined && income.reimbursedExpenseId !== "auto");
+  const currentId = decided ? income.reimbursedExpenseId : suggestedId;
+  const linked = currentId ? (state.expenses || []).find((item) => item.id === currentId) : null;
+  if (linked && !choices.some((choice) => choice.expense.id === linked.id)) {
+    const total = Math.abs(Number(linked.amount || 0));
+    choices.unshift({ expense: linked, total, already: reimbursedAmount(linked.id, reimbursementAllocations(payback.id || "")), days: daysBetween(linked.date, payback.date), fits: true });
+  }
+  const noneChecked = decided && !income.reimbursedExpenseId;
+  const categories = visibleCategories(expenseCategories, income?.reimbursementCategory).filter((category) => !REIMBURSEMENT_IGNORED_EXPENSE_CATEGORIES.has(category));
+  const choiceHtml = ({ expense, total, already, days, fits }) => `<label class="reimbursement-choice${expense.id === suggestedId ? " suggested" : ""}${fits ? "" : " too-small"}" data-reimbursement-choice="${escapeAttr(normalizeText(`${expense.name} ${expense.category}`))}">
+      <input type="radio" name="target" value="${escapeAttr(expense.id)}" ${expense.id === currentId ? "checked" : ""} required>
+      <span><strong>${escapeHtml(expense.name || "strošek")}</strong><small>${escapeHtml(expense.date)} · ${dayCountLabel(days)} · ${escapeHtml(expense.category || "")}${already ? ` · že vrnjeno ${money(already)}` : ""}</small></span>
+      <b>${money(total)}</b>${expense.id === suggestedId ? `<em>predlog</em>` : ""}
+    </label>`;
+  return `<div class="modal-backdrop">
+    <form class="modal reimbursement-dialog" data-link-reimbursement-form>
+      <div class="modal-head"><h3>Poveži vračilo${queue.length > 1 ? ` (${position + 1}/${queue.length})` : ""}</h3><button type="button" class="icon-btn" data-action="close">X</button></div>
+      <div class="modal-body">
+        <div class="payback-summary"><strong>${escapeHtml(payback.name || "Vračilo")}</strong><span>${escapeHtml(payback.date)} · <b class="positive">+${money(payback.amount)}</b></span></div>
+        <p class="settings-note">Izberi račun, ki ga to vračilo pokriva. Na vrhu so računi, ki se časovno najbolje ujemajo; zatemnjeni so manjši od vračila.</p>
+        <input type="search" placeholder="Išči račun ali kategorijo" data-reimbursement-search aria-label="Išči račun">
+        <div class="reimbursement-choices">
+          ${choices.length ? choices.map(choiceHtml).join("") : `<div class="empty">V zadnjih 60 dneh ni računov.</div>`}
+          <label class="reimbursement-choice none">
+            <input type="radio" name="target" value="" ${noneChecked ? "checked" : ""} required>
+            <span><strong>Brez računa</strong><small>zmanjša izbrano kategorijo v mesecu vračila</small></span>
+            <select name="reimbursementCategory" aria-label="Kategorija">${categories.map((category) => option(category, income?.reimbursementCategory || "restavracije/kava")).join("")}</select>
+          </label>
+        </div>
+      </div>
+      <div class="modal-foot reimbursement-actions">
+        <button type="button" class="button secondary" data-action="reimbursement-not">Ni vračilo</button>
+        <button type="button" class="button secondary" data-action="reimbursement-skip">${position + 1 < queue.length ? "Preskoči" : "Kasneje"}</button>
+        <button class="button" type="submit">Poveži</button>
+      </div>
+    </form>
+  </div>`;
+}
+
+function advanceReimbursementDialog() {
+  const next = modal?.item ? modal.item.position + 1 : 0;
+  if (modal?.collection === "linkReimbursement" && next < modal.item.queue.length) {
+    modal = { ...modal, item: { ...modal.item, position: next } };
+  } else {
+    modal = null;
+  }
+  save();
+  render();
+}
+
+function saveReimbursementLink(values) {
+  const entry = reimbursementDialogEntry(modal?.item?.queue?.[modal.item.position]);
+  if (!entry) return advanceReimbursementDialog();
+  const before = entry.income ? [entry.income.date, ...reimbursementReportingDates(entry.income)] : [entry.payback.date];
+  let income = entry.income;
+  if (!income) {
+    const saved = upsertTransaction({ id: entry.tx.id, category: REIMBURSEMENT_CATEGORY, type: "prihodek" });
+    income = (state.incomes || []).find((item) => item.id === saved.linkedIncomeId);
+  }
+  if (!income) return advanceReimbursementDialog();
+  const target = values.target ? (state.expenses || []).find((item) => item.id === values.target) : null;
+  const updated = upsertIncome({
+    ...income,
+    category: REIMBURSEMENT_CATEGORY,
+    reimbursedExpenseId: target?.id || "",
+    reimbursementCategory: target?.category || values.reimbursementCategory || "drugo",
+  }, true, { silent: true });
+  refreshClosedMonthsAfterCorrection(
+    closedPeriodsForDates([...before, updated.date, ...reimbursementReportingDates(updated)]),
+    `Vračilo deljenega stroška "${updated.name || "vračilo"}"`
+  );
+  advanceReimbursementDialog();
+}
+
+function rejectReimbursement() {
+  const entry = reimbursementDialogEntry(modal?.item?.queue?.[modal.item.position]);
+  if (entry?.income) {
+    const before = [entry.income.date, ...reimbursementReportingDates(entry.income)];
+    upsertIncome({ ...entry.income, category: "prihodki", notReimbursement: true }, true, { silent: true });
+    refreshClosedMonthsAfterCorrection(closedPeriodsForDates(before), `Nakazilo "${entry.income.name || "prihodek"}" ni vračilo`);
+  } else if (entry?.tx) {
+    upsertTransaction({ id: entry.tx.id, category: "prihodki", type: "prihodek" });
+    refreshClosedMonthsAfterCorrection(closedPeriodsForDates([entry.tx.date]), `Nakazilo "${entry.tx.description || "prihodek"}" ni vračilo`);
+  }
+  advanceReimbursementDialog();
 }
 
 function reviewTransactions() {
@@ -4064,7 +4225,7 @@ function possibleReimbursementsCard() {
       return `<div class="unusual-row">
       <div><strong>${escapeHtml(income.name || "Nakazilo")}</strong><small>${escapeHtml(income.date)} · ${hint}</small></div>
       <strong class="positive">${money(Math.abs(Number(income.amount || 0)))}</strong>
-      <div class="unusual-actions"><button class="button" type="button" data-reimbursement-mark="${escapeAttr(income.id)}">Je vračilo</button><button class="button secondary" type="button" data-reimbursement-dismiss="${escapeAttr(income.id)}">Je prihodek</button></div>
+      <div class="unusual-actions"><button class="button" type="button" data-link-reimbursement="${escapeAttr(income.id)}">Je vračilo</button><button class="button secondary" type="button" data-reimbursement-dismiss="${escapeAttr(income.id)}">Je prihodek</button></div>
     </div>`;
     }).join("")}</div>
   </div></section>`;
@@ -5599,6 +5760,25 @@ function rebuildImportDraft() {
     if (isDuplicateTransaction(tx)) tx.status = "možen dvojnik";
     return tx;
   });
+  matchImportReimbursements();
+}
+
+// Shows in the import preview which bill a payback most likely covers (also bills in the same file).
+// The payback itself is linked in the dialog that opens after the import.
+const REIMBURSEMENT_AUTO_CONFIRM_SCORE = 45;
+
+function matchImportReimbursements() {
+  const draftExpenses = importDraft.transactions
+    .filter((tx) => tx.amount < 0 && tx.status === "pripravljeno" && !REIMBURSEMENT_IGNORED_EXPENSE_CATEGORIES.has(tx.category))
+    .map((tx) => ({ id: `draft:${tx.index}`, date: tx.date, name: tx.description, amount: Math.abs(tx.amount), category: tx.category }));
+  for (const tx of importDraft.transactions) {
+    if (tx.manualChanged || tx.amount <= 0 || tx.category !== REIMBURSEMENT_CATEGORY || tx.status !== "za pregled") continue;
+    const best = reimbursementCandidates({ date: tx.date, amount: tx.amount, category: REIMBURSEMENT_CATEGORY }, 1, draftExpenses)[0];
+    const label = best ? `${best.expense.name || "strošek"} (${best.expense.date})` : "";
+    tx.ruleSource = best && best.score >= REIMBURSEMENT_AUTO_CONFIRM_SCORE
+      ? `vračilo za: ${label}`
+      : best && best.score >= 20 ? `morda vračilo za: ${label}` : "nakazilo osebe - ujemajočega računa ni";
+  }
 }
 
 function readMapped(row, key) {
@@ -6324,6 +6504,10 @@ function confirmImportDraft() {
     messages.push(`Opozorilo: ${unmatchedAccountCount} uvoženih vnosov ni bilo mogoče pripisati nobenemu računu (izbrani račun ne obstaja). Stanja teh računov se niso spremenila - preveri jih v seznamu transakcij.`);
   }
   if (messages.length) alert(messages.join("\n"));
+  const paybacks = transactionRows
+    .filter((tx) => tx.category === REIMBURSEMENT_CATEGORY && Number(tx.amount) > 0)
+    .map((tx) => (tx.linkedIncomeId ? { kind: "income", id: tx.linkedIncomeId } : { kind: "tx", id: tx.id }));
+  if (paybacks.length) openReimbursementDialog(paybacks);
 }
 
 function rememberSelectedRules(transactions) {
@@ -6914,6 +7098,7 @@ function modalHtml() {
   if (modal.collection === "deleteProfile") return deleteProfileModalHtml();
   if (modal.collection === "closeMonth") return closeMonthModalHtml();
   if (modal.collection === "quickEntry") return quickEntryModalHtml();
+  if (modal.collection === "linkReimbursement") return reimbursementDialogHtml();
   const current = modal.item || defaults(modal.collection);
   return `<div class="modal-backdrop">
     <form class="modal" data-form="${modal.collection}">
@@ -7631,6 +7816,10 @@ function bind() {
   const confirmReviewCategory = (id, category) => {
     const existing = (state.transactions || []).find((item) => item.id === id);
     if (!existing) return;
+    if (category === REIMBURSEMENT_CATEGORY && Number(existing.amount) > 0) {
+      openReimbursementDialog([{ kind: "tx", id }]);
+      return;
+    }
     const type = Number(existing.amount) < 0 ? "strošek" : "prihodek";
     const saved = upsertTransaction({ id, category, type });
     const income = (state.incomes || []).find((item) => item.id === saved.linkedIncomeId);
@@ -7644,7 +7833,20 @@ function bind() {
     const tx = (state.transactions || []).find((item) => item.id === btn.dataset.reviewConfirm);
     confirmReviewCategory(btn.dataset.reviewConfirm, select?.value || tx?.category);
   }));
-  document.querySelectorAll("[data-reimbursement-mark]").forEach((btn) => btn.addEventListener("click", () => markIncomeAsReimbursement(btn.dataset.reimbursementMark)));
+  document.querySelectorAll("[data-action='link-review-reimbursements']").forEach((btn) => btn.addEventListener("click", () => openReimbursementDialog(reviewReimbursements().map((tx) => ({ kind: "tx", id: tx.id })))));
+  document.querySelectorAll("[data-link-reimbursement]").forEach((btn) => btn.addEventListener("click", () => openReimbursementDialog([{ kind: "income", id: btn.dataset.linkReimbursement }])));
+  document.querySelectorAll("[data-link-reimbursement-form]").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      saveReimbursementLink(Object.fromEntries(new FormData(form).entries()));
+    });
+    form.querySelector("[data-action='reimbursement-skip']")?.addEventListener("click", advanceReimbursementDialog);
+    form.querySelector("[data-action='reimbursement-not']")?.addEventListener("click", rejectReimbursement);
+    form.querySelector("[data-reimbursement-search]")?.addEventListener("input", (event) => {
+      const query = normalizeText(event.target.value).trim();
+      form.querySelectorAll("[data-reimbursement-choice]").forEach((row) => { row.hidden = Boolean(query) && !row.dataset.reimbursementChoice.includes(query); });
+    });
+  });
   document.querySelectorAll("[data-reimbursement-dismiss]").forEach((btn) => btn.addEventListener("click", () => dismissPossibleReimbursement(btn.dataset.reimbursementDismiss)));
   document.querySelectorAll("[data-import-filter]").forEach((btn) => btn.addEventListener("click", () => {
     importFilter = btn.dataset.importFilter;
