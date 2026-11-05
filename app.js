@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "108";
+const APP_VERSION = "109";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -6271,7 +6271,9 @@ function hasOppositeImportTransfer(tx, rows, currentIndex) {
     const date = normalizeDate(readMapped(row, "date"));
     if (daysBetweenDates(date, tx.date) > 2) return false;
     const text = normalizeText(`${readMapped(row, "description")} ${readMapped(row, "reference")} ${readMapped(row, "type")}`);
-    return isTransferLikeText(currentText) || isTransferLikeText(text);
+    // Both sides must look like a transfer: a top-up of 88 and a card payment of 88 on the same
+    // day are two real movements, not one transfer seen twice.
+    return isTransferLikeText(currentText) && isTransferLikeText(text);
   });
 }
 
