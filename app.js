@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "101";
+const APP_VERSION = "102";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -17,7 +17,7 @@ const currentMonth = now.getMonth() + 1;
 const pad = (value) => String(value).padStart(2, "0");
 const iso = (year, month, day) => `${year}-${pad(month)}-${pad(day)}`;
 
-const incomeCategories = ["plača", "regres", "nadure", "študentsko delo", "povračilo stroškov", "prodaja stvari", "dividende", "obresti", "prihodki", "interni transfer", "za pregled", "drugo"];
+const incomeCategories = ["plača", "regres", "nadure", "študentsko delo", "povračilo stroškov", "vračilo deljenega stroška", "prodaja stvari", "dividende", "obresti", "prihodki", "interni transfer", "za pregled", "drugo"];
 const expenseCategories = ["stanovanje", "hrana", "gorivo", "avto", "zavarovanja", "telefon", "šport", "oblačila", "kozmetika", "prosti čas", "naročnine", "restavracije/kava", "potovanja", "darila", "zdravje", "orodje/oprema", "davki", "gotovina", "investicije", "spletni nakupi", "bančni stroški", "interni transfer", "za pregled", "drugo"];
 const expenseCategoryGroups = ["Bivanje", "Hrana", "Transport", "Zdravje in zavarovanja", "Življenjski slog", "Finance in davki", "Nakupi in oprema", "Transferji", "Drugo / za pregled"];
 const expenseCategoryGroupMap = {
@@ -2227,9 +2227,169 @@ function monthLabel(month, year) {
   return new Date(year, month - 1, 1).toLocaleDateString("sl-SI", { month: "long", year: "numeric" });
 }
 
+// Shared expenses: when you pay for a group and friends pay you back, the money that comes back is not
+// income and the part you paid for others is not your spending. Account balances stay untouched (the
+// money really moved); only reporting nets the reimbursement against the expense it covers.
+const REIMBURSEMENT_CATEGORY = "vračilo deljenega stroška";
+const REIMBURSEMENT_IGNORED_EXPENSE_CATEGORIES = new Set(["interni transfer", "za pregled", "investicije"]);
+const SHARED_EXPENSE_CATEGORIES = new Set(["restavracije/kava", "potovanja", "prosti čas", "hrana", "darila", "šport", "gorivo"]);
+
+function isReimbursementIncome(income) {
+  return income?.category === REIMBURSEMENT_CATEGORY;
+}
+
+function roundCents(value) {
+  return Math.round(Number(value || 0) * 100) / 100;
+}
+
+// How much of each expense is covered by reimbursements, plus "offset" rows (negative amounts) for
+// reimbursements that are not tied to an existing expense or exceed the expense they point to.
+function reimbursementAllocations(excludeIncomeId = "") {
+  const expensesById = new Map((state.expenses || []).map((expense) => [expense.id, expense]));
+  const byExpense = new Map();
+  const offsets = [];
+  for (const income of state.incomes || []) {
+    if (!isReimbursementIncome(income) || income.id === excludeIncomeId) continue;
+    const amount = Math.abs(Number(income.amount || 0));
+    if (!amount) continue;
+    const expense = income.reimbursedExpenseId ? expensesById.get(income.reimbursedExpenseId) : null;
+    let rest = amount;
+    if (expense) {
+      const already = byExpense.get(expense.id) || 0;
+      const applied = Math.min(rest, Math.max(0, Math.abs(Number(expense.amount || 0)) - already));
+      if (applied > 0) byExpense.set(expense.id, roundCents(already + applied));
+      rest = roundCents(rest - applied);
+    }
+    if (rest > 0.004) {
+      const category = expense?.category || income.reimbursementCategory || "drugo";
+      offsets.push({
+        id: `vracilo:${income.id}`,
+        date: expense?.date || income.date,
+        name: `Vračilo: ${income.name || "deljen strošek"}`,
+        amount: -rest,
+        category,
+        categoryGroup: expense?.categoryGroup || categoryGroupFor(category),
+        kind: expense?.kind || "variabilen",
+        account: expense?.account || income.account || "",
+        balanceAccountId: expense?.balanceAccountId || income.balanceAccountId || "",
+        reimbursementOffset: true,
+        reimbursementIncomeId: income.id,
+      });
+    }
+  }
+  return { byExpense, offsets };
+}
+
+function reimbursedAmount(expenseId, allocations = reimbursementAllocations()) {
+  return allocations.byExpense.get(expenseId) || 0;
+}
+
+function netExpenseAmount(expense, allocations = reimbursementAllocations()) {
+  return Math.max(0, roundCents(Math.abs(Number(expense.amount || 0)) - reimbursedAmount(expense.id, allocations)));
+}
+
+// Expenses as they count for analytics: each reduced by what friends paid back, plus offset rows.
+function reportingExpenses(month, year, allocations = reimbursementAllocations()) {
+  const rows = (state.expenses || [])
+    .filter((item) => sameMonth(item, "date", month, year))
+    .map((expense) => {
+      const reimbursed = reimbursedAmount(expense.id, allocations);
+      return reimbursed ? { ...expense, amount: netExpenseAmount(expense, allocations), grossAmount: expense.amount, reimbursedAmount: reimbursed } : expense;
+    });
+  return [...rows, ...allocations.offsets.filter((item) => sameMonth(item, "date", month, year))];
+}
+
+function reportingIncomes(month, year) {
+  return (state.incomes || []).filter((item) => sameMonth(item, "date", month, year) && !isReimbursementIncome(item));
+}
+
+// The month a reimbursement changes in analytics: the covered expense's month, else its own.
+function reimbursementReportingDates(income) {
+  if (!isReimbursementIncome(income)) return [];
+  const expense = income.reimbursedExpenseId ? (state.expenses || []).find((item) => item.id === income.reimbursedExpenseId) : null;
+  return [income.date, expense?.date].filter(Boolean);
+}
+
+function closedPeriodsForDates(dates) {
+  const periods = new Map();
+  dates.map(periodFromDate).filter(Boolean).forEach((period) => {
+    if (monthClosure(period.month, period.year)) periods.set(period.key, period);
+  });
+  return [...periods.values()];
+}
+
+// Expenses a reimbursement most likely belongs to, best first. A friend usually pays back an equal
+// share of a bill paid in the weeks before, so a bill that is a multiple of the amount ranks high.
+function reimbursementCandidates(income, limit = 25) {
+  const date = income?.date || iso(currentYear, currentMonth, now.getDate());
+  const amount = Math.abs(Number(income?.amount || 0));
+  const from = shiftIsoDate(date, -60);
+  const to = shiftIsoDate(date, 3);
+  const allocations = reimbursementAllocations(income?.id || "");
+  return (state.expenses || [])
+    .filter((expense) =>
+      expense.date >= from
+      && expense.date <= to
+      && Math.abs(Number(expense.amount || 0)) > 0
+      && !REIMBURSEMENT_IGNORED_EXPENSE_CATEGORIES.has(expense.category)
+    )
+    .map((expense) => {
+      const total = Math.abs(Number(expense.amount || 0));
+      const already = reimbursedAmount(expense.id, allocations);
+      const remaining = roundCents(total - already);
+      let score = 0;
+      if (amount > 0) {
+        score += remaining >= amount - 0.01 ? 50 : -40;
+        const ratio = total / amount;
+        if (ratio >= 1.5 && ratio <= 20 && Math.abs(ratio - Math.round(ratio)) <= 0.08) score += 25;
+      }
+      if (already > 0 && remaining > 0) score += 15;
+      if (SHARED_EXPENSE_CATEGORIES.has(expense.category)) score += 10;
+      score -= Math.abs(daysBetween(expense.date, date)) * 0.6;
+      if (expense.date > date) score -= 10;
+      return { expense, remaining, score };
+    })
+    .sort((a, b) => b.score - a.score || b.expense.date.localeCompare(a.expense.date))
+    .slice(0, limit);
+}
+
+// Links a reimbursement to its most likely expense unless the link was already decided.
+function linkReimbursement(income) {
+  if (!isReimbursementIncome(income)) return income;
+  if (income.reimbursedExpenseId !== undefined && income.reimbursedExpenseId !== "auto") return income;
+  const best = reimbursementCandidates(income, 1)[0];
+  const linked = best && best.score >= 20 ? best.expense : null;
+  return {
+    ...income,
+    reimbursedExpenseId: linked?.id || "",
+    reimbursementCategory: linked?.category || income.reimbursementCategory || "drugo",
+    reimbursementAuto: true,
+  };
+}
+
+function linkReimbursementById(id) {
+  const income = (state.incomes || []).find((item) => item.id === id);
+  if (!income) return null;
+  const linked = linkReimbursement(income);
+  if (linked !== income) replaceRecordById("incomes", id, linked);
+  return linked;
+}
+
+// Incomes that look like a friend paying back (person transfers) but still count as income.
+function possibleReimbursementIncomes() {
+  return (state.incomes || [])
+    .filter((income) =>
+      !isReimbursementIncome(income)
+      && !income.notReimbursement
+      && ["prihodki", "drugo"].includes(income.category)
+      && isPersonTransferText(income.originalDescription || income.name || "", "transfer")
+    )
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+}
+
 function monthlyData(month = filters.month, year = filters.year) {
-  const incomes = state.incomes.filter((item) => sameMonth(item, "date", month, year));
-  const expenses = state.expenses.filter((item) => sameMonth(item, "date", month, year));
+  const incomes = reportingIncomes(month, year);
+  const expenses = reportingExpenses(month, year);
   const investments = state.investments.filter((item) => sameMonth(item, "date", month, year));
   const selectedSnapshot = snapshotForMonth(month, year);
   const isCurrent = Number(month) === currentMonth && Number(year) === currentYear;
@@ -2245,9 +2405,11 @@ function monthlyData(month = filters.month, year = filters.year) {
   const incomeTotal = sum(incomes);
   const expenseTotal = sum(expenses);
   const saved = incomeTotal - expenseTotal;
+  const reimbursedTotal = roundCents(expenses.reduce((total, item) => total + Number(item.reimbursedAmount || 0) - (item.reimbursementOffset ? Number(item.amount || 0) : 0), 0));
   return {
     incomes,
     expenses,
+    reimbursedTotal,
     investments,
     incomeTotal,
     expenseTotal,
@@ -2556,9 +2718,10 @@ function upsert(collection, values) {
     return;
   }
   if (collection === "incomes") {
+    const originalDates = original ? [original.date, ...reimbursementReportingDates(original)] : [];
     const savedIncome = upsertIncome(clean, true);
     refreshClosedMonthsAfterCorrection(
-      affectedClosedPeriods(original?.date, savedIncome.date),
+      closedPeriodsForDates([...originalDates, savedIncome.date, ...reimbursementReportingDates(savedIncome)]),
       `Popravek datuma prihodka "${savedIncome.name || "prihodek"}"`
     );
     save();
@@ -3038,6 +3201,18 @@ function upsertIncome(clean, syncTransaction = false, options = {}) {
     balanceAccountId: "",
     balanceImpact: 0,
   };
+  if (!isReimbursementIncome(row)) {
+    delete row.reimbursedExpenseId;
+    delete row.reimbursementCategory;
+    delete row.reimbursementAuto;
+  } else if (!options.deferReimbursementLink) {
+    const explicitLink = "reimbursedExpenseId" in clean && clean.reimbursedExpenseId !== "auto";
+    // An income that just became a reimbursement gets a fresh link; an empty value synced from
+    // Google Sheets (every row gets every column there) is not a decision.
+    if (!explicitLink && !isReimbursementIncome(existing)) row.reimbursedExpenseId = "auto";
+    if (explicitLink) row.reimbursementAuto = false;
+    row = linkReimbursement(row);
+  }
   replaceOrInsertRecord("incomes", row);
   row = applyIncomeBalance(row);
   replaceRecordById("incomes", row.id, row);
@@ -3548,12 +3723,23 @@ function rowActionMenu(collection, id, { allowRule = false, allowDuplicate = fal
   </div>`;
 }
 
+function reimbursementTargetLabel(income) {
+  const expense = income.reimbursedExpenseId ? (state.expenses || []).find((item) => item.id === income.reimbursedExpenseId) : null;
+  if (expense) return `za: ${escapeHtml(expense.name || "strošek")} (${escapeHtml(expense.date)})${income.reimbursementAuto ? " · samodejno" : ""}`;
+  return `zmanjša: ${escapeHtml(income.reimbursementCategory || "drugo")}`;
+}
+
 function incomeColumns() {
-  return [["Datum", (r) => r.date], ["Naziv", (r) => r.name], ["Znesek", (r) => `<strong class="positive">${money(r.amount)}</strong>`], ["Kategorija", (r) => r.category], ["Vrsta", (r) => `<span class="pill">${incomeClassification(r)}</span>`], ["Vir", (r) => r.source], ["Račun", (r) => r.account || "Ni določen"], ["Opomba", (r) => r.note || ""]];
+  return [["Datum", (r) => r.date], ["Naziv", (r) => r.name], ["Znesek", (r) => `<strong class="positive">${money(r.amount)}</strong>`], ["Kategorija", (r) => isReimbursementIncome(r) ? `${escapeHtml(r.category)}<br><small class="muted">${reimbursementTargetLabel(r)}</small>` : r.category], ["Vrsta", (r) => isReimbursementIncome(r) ? `<span class="pill">vračilo</span>` : `<span class="pill">${incomeClassification(r)}</span>`], ["Vir", (r) => r.source], ["Račun", (r) => r.account || "Ni določen"], ["Opomba", (r) => r.note || ""]];
 }
 
 function expenseColumns() {
-  return [["Datum", (r) => r.date], ["Naziv", (r) => r.name], ["Znesek", (r) => `<strong class="negative">${money(r.amount)}</strong>`], ["Skupina", (r) => r.categoryGroup || categoryGroupFor(r.category)], ["Kategorija", (r) => r.category], ["Vrsta", (r) => `<span class="pill">${r.kind}</span>`], ["Račun", (r) => r.account], ["Opomba", (r) => r.note || ""]];
+  const allocations = reimbursementAllocations();
+  const amountHtml = (r) => {
+    const reimbursed = reimbursedAmount(r.id, allocations);
+    return `<strong class="negative">${money(r.amount)}</strong>${reimbursed ? `<br><small class="muted">povrnjeno ${money(reimbursed)} · tvoj del ${money(netExpenseAmount(r, allocations))}</small>` : ""}`;
+  };
+  return [["Datum", (r) => r.date], ["Naziv", (r) => r.name], ["Znesek", amountHtml], ["Skupina", (r) => r.categoryGroup || categoryGroupFor(r.category)], ["Kategorija", (r) => r.category], ["Vrsta", (r) => `<span class="pill">${r.kind}</span>`], ["Račun", (r) => r.account], ["Opomba", (r) => r.note || ""]];
 }
 
 function transactionsView() {
@@ -3562,7 +3748,7 @@ function transactionsView() {
   const reviewCard = review.length
     ? `<section class="card review-card"><div class="card-header"><div><h3>Za pregled</h3><p>Te transakcije potrebujejo tvojo potrditev kategorije.</p></div><span class="pill">${review.length} odprtih</span></div><div class="card-body table-wrap">${modernTransactionsTable(review)}</div></section>`
     : "";
-  const topCards = [reviewCard, unusualExpensesCard()].filter(Boolean);
+  const topCards = [reviewCard, possibleReimbursementsCard(), unusualExpensesCard()].filter(Boolean);
   return `${topCards.join(`<div style="height:18px"></div>`)}
   <section class="grid metrics"${topCards.length ? ` style="margin-top:18px"` : ""}>
     ${countCard("Za pregled", review.length, "potrebuje ročno odločitev", "warning")}
@@ -3667,7 +3853,11 @@ function median(values) {
 // The baseline includes one-off expenses on purpose: excluding them would lower the median after
 // each marking and surface new "unusual" expenses in a chain.
 function unusualExpenses(today = iso(currentYear, currentMonth, now.getDate())) {
-  const expenses = state.expenses || [];
+  // Judged on your own share: what friends paid back is not your spending.
+  const allocations = reimbursementAllocations();
+  const expenses = (state.expenses || [])
+    .map((expense) => (reimbursedAmount(expense.id, allocations) ? { ...expense, amount: netExpenseAmount(expense, allocations) } : expense))
+    .filter((expense) => Math.abs(Number(expense.amount || 0)) > 0);
   const since = shiftIsoDate(today, -120);
   return expenses
     .filter((expense) =>
@@ -3817,6 +4007,40 @@ function unusualExpensesCard() {
   </div></section>`;
 }
 
+function markIncomeAsReimbursement(id) {
+  const income = (state.incomes || []).find((item) => item.id === id);
+  if (!income) return;
+  const before = [income.date];
+  const saved = upsertIncome({ ...income, category: REIMBURSEMENT_CATEGORY, reimbursedExpenseId: "auto" }, true, { silent: true });
+  refreshClosedMonthsAfterCorrection(closedPeriodsForDates([...before, ...reimbursementReportingDates(saved)]), `Vračilo deljenega stroška "${saved.name || "prihodek"}"`);
+  save();
+  render();
+}
+
+function dismissPossibleReimbursement(id) {
+  const income = (state.incomes || []).find((item) => item.id === id);
+  if (!income) return;
+  replaceRecordById("incomes", id, { ...income, notReimbursement: true });
+  save();
+  render();
+}
+
+function possibleReimbursementsCard() {
+  const rows = possibleReimbursementIncomes();
+  if (!rows.length) return "";
+  return `<section class="card review-card unusual-card"><div class="card-header"><div><h3>Je to vračilo?</h3><p>Nakazila oseb se štejejo kot prihodek. Če ti je nekdo vrnil denar za skupni račun, ga označi kot vračilo - zmanjšal bo tisti strošek namesto da napihne prihodke.</p></div><span class="pill">${rows.length}</span></div><div class="card-body">
+    <div class="unusual-list">${rows.slice(0, 12).map((income) => {
+      const guess = reimbursementCandidates({ ...income, category: REIMBURSEMENT_CATEGORY }, 1)[0];
+      const hint = guess && guess.score >= 20 ? `verjetno za: ${escapeHtml(guess.expense.name || "strošek")} (${escapeHtml(guess.expense.date)}, ${money(Math.abs(Number(guess.expense.amount || 0)))})` : "ujemajočega stroška nisem našel";
+      return `<div class="unusual-row">
+      <div><strong>${escapeHtml(income.name || "Nakazilo")}</strong><small>${escapeHtml(income.date)} · ${hint}</small></div>
+      <strong class="positive">${money(Math.abs(Number(income.amount || 0)))}</strong>
+      <div class="unusual-actions"><button class="button" type="button" data-reimbursement-mark="${escapeAttr(income.id)}">Je vračilo</button><button class="button secondary" type="button" data-reimbursement-dismiss="${escapeAttr(income.id)}">Je prihodek</button></div>
+    </div>`;
+    }).join("")}</div>
+  </div></section>`;
+}
+
 function recentTransactions(limit = 10) {
   return [...(state.transactions || [])].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, limit);
 }
@@ -3830,7 +4054,7 @@ function modernTransactionsTable(rows) {
       <td>${escapeHtml(tx.date || "")}</td>
       <td>${escapeHtml(tx.categoryGroup || categoryGroupFor(tx.category))}</td>
       <td>${tx.status === "za pregled"
-        ? `<span class="pill confidence-${tx.confidence || "low"}">${confidenceLevels[tx.confidence] || "Nejasno"}</span><br><select data-review-category="${escapeAttr(tx.id)}">${importCategories.map((c) => option(c, tx.category)).join("")}</select>`
+        ? `<span class="pill confidence-${tx.confidence || "low"}">${confidenceLevels[tx.confidence] || "Nejasno"}</span><br><span class="review-pick"><select data-review-category="${escapeAttr(tx.id)}">${importCategories.map((c) => option(c, tx.category)).join("")}</select>${tx.category && tx.category !== "za pregled" ? `<button class="button secondary review-confirm" type="button" title="Potrdi kategorijo" aria-label="Potrdi kategorijo" data-review-confirm="${escapeAttr(tx.id)}">✓</button>` : ""}</span>`
         : `<span class="pill">${escapeHtml(tx.category || "za pregled")}</span>${tx.subcategory ? `<br><small class="muted">${escapeHtml(tx.subcategory)}</small>` : ""}`}</td>
       <td>${escapeHtml(tx.account || "")}</td>
       <td>${rowActionMenu("transactions", tx.id, { allowRule: !tx.transferManaged && !tx.balanceAdjustment, allowDuplicate: !tx.balanceAdjustment, allowRecurring: !tx.transferManaged && !tx.balanceAdjustment })}</td>
@@ -3987,7 +4211,7 @@ function monthlyView() {
     </div>
     <section class="grid metrics" style="margin-top:14px">
       ${metricCard(["Prihodki", displayed.incomeTotal, monthLabel(filters.month, filters.year), "positive"])}
-      ${metricCard(["Stroški", displayed.expenseTotal, "skupaj", "negative"])}
+      ${metricCard(["Stroški", displayed.expenseTotal, Number(displayed.reimbursedTotal || 0) > 0 ? `tvoj del · vrnjeno ${money(displayed.reimbursedTotal)}` : "skupaj", "negative"])}
       ${metricCard(["Prihranek", displayed.saved, `${NUMBER.format(displayed.savingsRate)} % savings rate`, displayed.saved >= 0 ? "positive" : "negative"])}
       ${metricCard(["Investirano", displayed.invested, "ta mesec", "positive"])}
       ${netWorthMetric}
@@ -4029,7 +4253,7 @@ function budgetRowsForMonth(month, year) {
       };
     });
   }
-  const expenses = state.expenses.filter((item) => sameMonth(item, "date", month, year));
+  const expenses = reportingExpenses(month, year);
   const previous = previousMonthPeriod(Number(month), Number(year));
   const previousClosure = monthClosure(previous.month, previous.year);
   return (state.budgets || []).map((budget) => {
@@ -4108,6 +4332,7 @@ function closeMonth(values) {
       expenseByKind: groupBy(data.expenses, "kind"),
       recurringExpenseByCategory: groupBy(data.expenses.filter((item) => item.kind !== "enkratni večji"), "category"),
       recurringExpenseTotal: sum(data.expenses.filter((item) => item.kind !== "enkratni večji")),
+      reimbursedTotal: data.reimbursedTotal,
       incomeByType: ["reden", "sezonski", "izreden"].map((type) => [type, sum(data.incomes.filter((item) => incomeClassification(item) === type))]),
     },
     budgets: budgetRowsForMonth(month, year).map(({ category, available, spent, unused }) => ({ category, available, spent, unused })),
@@ -4134,7 +4359,7 @@ function affectedClosedPeriods(previousDate, nextDate) {
 }
 
 function liveBudgetRowsForMonth(month, year) {
-  const expenses = state.expenses.filter((item) => sameMonth(item, "date", month, year));
+  const expenses = reportingExpenses(month, year);
   const previous = previousMonthPeriod(Number(month), Number(year));
   const previousClosure = monthClosure(previous.month, previous.year);
   return (state.budgets || []).map((budget) => {
@@ -4184,6 +4409,7 @@ function rebuildMonthClosure(month, year, reason) {
       expenseByKind: groupBy(data.expenses, "kind"),
       recurringExpenseByCategory: groupBy(data.expenses.filter((item) => item.kind !== "enkratni večji"), "category"),
       recurringExpenseTotal: sum(data.expenses.filter((item) => item.kind !== "enkratni večji")),
+      reimbursedTotal: data.reimbursedTotal,
       incomeByType: ["reden", "sezonski", "izreden"].map((type) => [type, sum(data.incomes.filter((item) => incomeClassification(item) === type))]),
     },
     budgets: liveBudgetRowsForMonth(month, year),
@@ -4341,7 +4567,7 @@ function incomeClassification(item) {
 }
 
 function recurringIncomeTotal(month, year) {
-  return sum(state.incomes.filter((item) => sameMonth(item, "date", month, year) && incomeClassification(item) === "reden"));
+  return sum(reportingIncomes(month, year).filter((item) => incomeClassification(item) === "reden"));
 }
 
 function analyticsMonthlyData(month, year, { ignoreClosure = false } = {}) {
@@ -4370,13 +4596,13 @@ function analyticsExpenseEntries(month, year, key = "category") {
     const locked = key === "kind" ? closure.analytics.expenseByKind : closure.analytics.expenseByCategory;
     if (Array.isArray(locked)) return locked;
   }
-  return groupBy(state.expenses.filter((item) => sameMonth(item, "date", month, year)), key);
+  return groupBy(reportingExpenses(month, year), key);
 }
 
 function analyticsExpenseGroupEntries(month, year) {
   const closure = monthClosure(month, year);
   if (Array.isArray(closure?.analytics?.expenseByGroup)) return closure.analytics.expenseByGroup;
-  return groupByCategoryGroup(state.expenses.filter((item) => sameMonth(item, "date", month, year)));
+  return groupByCategoryGroup(reportingExpenses(month, year));
 }
 
 function analyticsExpenseCategoryTotal(month, year, category) {
@@ -4386,19 +4612,19 @@ function analyticsExpenseCategoryTotal(month, year, category) {
 function analyticsRecurringExpenseEntries(month, year) {
   const closure = monthClosure(month, year);
   if (Array.isArray(closure?.analytics?.recurringExpenseByCategory)) return closure.analytics.recurringExpenseByCategory;
-  return groupBy(state.expenses.filter((item) => sameMonth(item, "date", month, year) && item.kind !== "enkratni večji"), "category");
+  return groupBy(reportingExpenses(month, year).filter((item) => item.kind !== "enkratni večji"), "category");
 }
 
 function analyticsRecurringExpenseTotal(month, year) {
   const closure = monthClosure(month, year);
   if (closure?.analytics?.recurringExpenseTotal !== undefined) return Number(closure.analytics.recurringExpenseTotal || 0);
-  return sum(state.expenses.filter((item) => sameMonth(item, "date", month, year) && item.kind !== "enkratni večji"));
+  return sum(reportingExpenses(month, year).filter((item) => item.kind !== "enkratni večji"));
 }
 
 function analyticsIncomeTypeEntries(month, year) {
   const closure = monthClosure(month, year);
   if (Number(closure?.analytics?.version || 0) >= 2 && Array.isArray(closure.analytics.incomeByType)) return closure.analytics.incomeByType;
-  const incomes = state.incomes.filter((item) => sameMonth(item, "date", month, year));
+  const incomes = reportingIncomes(month, year);
   return ["reden", "sezonski", "izreden"].map((type) => [type, sum(incomes.filter((item) => incomeClassification(item) === type))]);
 }
 
@@ -4428,7 +4654,8 @@ function trackedMonthsLabel(count) {
 
 function analyticsExpenseSample(months) {
   const selected = months.length ? months : recordedActivityMonths(1);
-  return state.expenses.filter((item) => selected.some(([month, year]) => sameMonth(item, "date", month, year)));
+  const allocations = reimbursementAllocations();
+  return selected.flatMap(([month, year]) => reportingExpenses(month, year, allocations));
 }
 
 const REVOLUT_BUDGET_IGNORED_CATEGORIES = new Set(["interni transfer", "investicije", "gotovina", "za pregled"]);
@@ -4442,13 +4669,13 @@ function isPaidFromAccount(expense, account) {
 function revolutBudget(months = completedActivityMonths(6)) {
   const revolut = accountByCanonicalKey("revolut");
   if (!revolut) return { value: 0, months: [] };
+  const allocations = reimbursementAllocations();
   const monthly = months
     .map(([month, year]) => ({
       month,
       year,
-      total: sum((state.expenses || []).filter((expense) =>
-        sameMonth(expense, "date", month, year)
-        && expense.kind !== "enkratni večji"
+      total: sum(reportingExpenses(month, year, allocations).filter((expense) =>
+        expense.kind !== "enkratni večji"
         && !REVOLUT_BUDGET_IGNORED_CATEGORIES.has(expense.category)
         && isPaidFromAccount(expense, revolut)
       )),
@@ -5291,7 +5518,9 @@ function rebuildImportDraft() {
       manualChanged: learned?.manualChanged || false,
       rememberRule: learned?.rememberRule || false,
     };
-    const personTransfer = !tx.manualChanged && ["nakazilo osebe", "nakazilo osebi"].includes(classification.source);
+    // Money from/to a person is never an own-account transfer unless the user explicitly says so
+    // (also when the category was chosen by hand or by a learned rule).
+    const personTransfer = isPersonTransferText(description, type) && tx.category !== "interni transfer";
     if (!tx.date || !Number.isFinite(tx.amount) || tx.amount === 0) tx.status = "nepopolno";
     if (tx.status !== "nepopolno" && /(revert|declin|fail|cancel)/.test(normalizeText(readMapped(row, "state")))) {
       tx.status = "preklicano";
@@ -5458,7 +5687,7 @@ function categorizeTransaction(description, type, amount) {
   }
   if (isPersonTransferText(description, type)) {
     return amount > 0
-      ? { category: "prihodki", subcategory: "nakazilo osebe", confidence: "low", source: "nakazilo osebe" }
+      ? { category: REIMBURSEMENT_CATEGORY, subcategory: "nakazilo osebe", confidence: "low", source: "nakazilo osebe" }
       : { category: "za pregled", subcategory: "nakazilo osebi", confidence: "low", source: "nakazilo osebi" };
   }
   const transferRule = matchRule(text, [
@@ -6015,13 +6244,14 @@ function confirmImportDraft() {
   state.transactions = [...transactionRows, ...(state.transactions || [])];
   let unmatchedAccountCount = 0;
   incomeRows.slice().reverse().forEach((row) => {
-    const saved = upsertIncome(row, false, { silent: true });
+    const saved = upsertIncome(row, false, { silent: true, deferReimbursementLink: true });
     if (saved.account && !saved.balanceAccountId) unmatchedAccountCount += 1;
   });
   expenseRows.slice().reverse().forEach((row) => {
     const saved = upsertExpense(row, false, { silent: true });
     if (saved.account && !saved.balanceAccountId) unmatchedAccountCount += 1;
   });
+  const reimbursementDates = incomeRows.flatMap((row) => reimbursementReportingDates(linkReimbursementById(row.id)));
   const reconciliation = importDraft.reconcile === false
     ? { adjustments: [], report: [] }
     : reconcileWithStatement(statementBalances(), sourceLabel, importId);
@@ -6041,7 +6271,7 @@ function confirmImportDraft() {
     reconciliation: reconciliation.report,
   }, ...(state.importHistory || [])];
   refreshClosedMonthsAfterCorrection(
-    [...new Map([...incomeRows, ...expenseRows, ...transactionRows, ...reconciliation.adjustments]
+    [...new Map([...incomeRows, ...expenseRows, ...transactionRows, ...reconciliation.adjustments, ...reimbursementDates.map((date) => ({ date }))]
       .map((row) => periodFromDate(row.date))
       .filter((period) => period && monthClosure(period.month, period.year))
       .map((period) => [period.key, period])).values()],
@@ -6523,7 +6753,7 @@ function weeklyExpenseBars(expenses) {
     const week = Math.max(0, Math.min(4, Math.floor((day - 1) / 7)));
     weeks[week][1] += Number(expense.amount || 0);
   }
-  return weeks;
+  return weeks.map(([label, value]) => [label, Math.max(0, value)]);
 }
 
 function columnChart(entries, formatValue = money) {
@@ -6621,9 +6851,30 @@ function modalHtml() {
         <input type="hidden" name="id" value="${current.id || ""}">
         ${fields[modal.collection].map(([name, type, label, options]) => fieldHtml(name, type, label, current[name], options)).join("")}
         ${modal.collection === "expenses" && !modal.item ? recurringExpenseOptionHtml(current) : ""}
+        ${modal.collection === "incomes" ? reimbursementFieldsHtml(current) : ""}
       </div>
       <div class="modal-foot"><button type="button" class="button secondary" data-action="close">Prekliči</button><button class="button" type="submit">Shrani</button></div>
     </form>
+  </div>`;
+}
+
+function reimbursementFieldsHtml(current) {
+  const active = isReimbursementIncome(current);
+  const decided = current.reimbursedExpenseId !== undefined && current.reimbursedExpenseId !== "auto";
+  const selected = decided ? current.reimbursedExpenseId : "auto";
+  const candidates = reimbursementCandidates(current).map((item) => item.expense);
+  const linked = decided && current.reimbursedExpenseId ? (state.expenses || []).find((item) => item.id === current.reimbursedExpenseId) : null;
+  if (linked && !candidates.some((item) => item.id === linked.id)) candidates.unshift(linked);
+  const expenseOption = (expense) => `<option value="${escapeAttr(expense.id)}" ${expense.id === selected ? "selected" : ""}>${escapeHtml(expense.date)} · ${escapeHtml(expense.name || "strošek")} · ${money(Math.abs(Number(expense.amount || 0)))}</option>`;
+  const categories = expenseCategories.filter((category) => !REIMBURSEMENT_IGNORED_EXPENSE_CATEGORIES.has(category));
+  return `<div class="reimbursement-fields full" data-reimbursement-fields ${active ? "" : "hidden"}>
+    <p class="settings-note">Vračilo ni prihodek: zmanjša strošek, ki ga pokriva. Stanje na računu se ne spremeni.</p>
+    <label>Za kateri strošek?<select name="reimbursedExpenseId" ${active ? "" : "disabled"}>
+      <option value="auto" ${selected === "auto" ? "selected" : ""}>Samodejno poišči strošek</option>
+      <option value="" ${selected === "" ? "selected" : ""}>Brez stroška – zmanjšaj kategorijo</option>
+      ${candidates.map(expenseOption).join("")}
+    </select></label>
+    <label>Kategorija, če strošek ni izbran<select name="reimbursementCategory" ${active ? "" : "disabled"}>${categories.map((category) => option(category, current.reimbursementCategory || "restavracije/kava")).join("")}</select></label>
   </div>`;
 }
 
@@ -7170,6 +7421,12 @@ function bind() {
     const group = select.form?.querySelector("select[name='categoryGroup']");
     const next = categoryGroupFor(select.value);
     if (group && [...group.options].some((item) => item.value === next)) group.value = next;
+    const reimbursement = select.form?.querySelector("[data-reimbursement-fields]");
+    if (reimbursement) {
+      const active = select.value === REIMBURSEMENT_CATEGORY;
+      reimbursement.hidden = !active;
+      reimbursement.querySelectorAll("select").forEach((field) => { field.disabled = !active; });
+    }
   }));
   document.querySelectorAll("[data-google-sheets-form]").forEach((form) => form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -7287,15 +7544,24 @@ function bind() {
   document.querySelectorAll("[data-import-reconcile]").forEach((checkbox) => checkbox.addEventListener("change", () => {
     if (importDraft) importDraft.reconcile = checkbox.checked;
   }));
-  document.querySelectorAll("[data-review-category]").forEach((select) => select.addEventListener("change", () => {
-    const id = select.dataset.reviewCategory;
+  const confirmReviewCategory = (id, category) => {
     const existing = (state.transactions || []).find((item) => item.id === id);
-    const type = existing && Number(existing.amount) < 0 ? "strošek" : "prihodek";
-    upsertTransaction({ id, category: select.value, type });
-    refreshClosedMonthsAfterCorrection(affectedClosedPeriods(existing?.date, existing?.date), `Pregled transakcije "${existing?.description || "transakcija"}"`);
+    if (!existing) return;
+    const type = Number(existing.amount) < 0 ? "strošek" : "prihodek";
+    const saved = upsertTransaction({ id, category, type });
+    const income = (state.incomes || []).find((item) => item.id === saved.linkedIncomeId);
+    refreshClosedMonthsAfterCorrection(closedPeriodsForDates([existing.date, ...reimbursementReportingDates(income)]), `Pregled transakcije "${existing.description || "transakcija"}"`);
     save();
     render();
+  };
+  document.querySelectorAll("[data-review-category]").forEach((select) => select.addEventListener("change", () => confirmReviewCategory(select.dataset.reviewCategory, select.value)));
+  document.querySelectorAll("[data-review-confirm]").forEach((btn) => btn.addEventListener("click", () => {
+    const select = document.querySelector(`[data-review-category="${CSS.escape(btn.dataset.reviewConfirm)}"]`);
+    const tx = (state.transactions || []).find((item) => item.id === btn.dataset.reviewConfirm);
+    confirmReviewCategory(btn.dataset.reviewConfirm, select?.value || tx?.category);
   }));
+  document.querySelectorAll("[data-reimbursement-mark]").forEach((btn) => btn.addEventListener("click", () => markIncomeAsReimbursement(btn.dataset.reimbursementMark)));
+  document.querySelectorAll("[data-reimbursement-dismiss]").forEach((btn) => btn.addEventListener("click", () => dismissPossibleReimbursement(btn.dataset.reimbursementDismiss)));
   document.querySelectorAll("[data-import-filter]").forEach((btn) => btn.addEventListener("click", () => {
     importFilter = btn.dataset.importFilter;
     render();

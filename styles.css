@@ -2187,6 +2187,48 @@ button:disabled {
   }
 }
 
+.reimbursement-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(47, 140, 255, 0.05);
+}
+
+.reimbursement-fields .settings-note {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.reimbursement-fields[hidden] {
+  display: none;
+}
+
+.review-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.review-pick select {
+  min-width: 0;
+}
+
+.review-confirm {
+  min-height: 0;
+  padding: 6px 10px;
+  line-height: 1;
+}
+
+@media (max-width: 720px) {
+  .reimbursement-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
 .tank-battle {
   position: fixed;
   inset: 0;
