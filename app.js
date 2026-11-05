@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "102";
+const APP_VERSION = "103";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -18,8 +18,8 @@ const pad = (value) => String(value).padStart(2, "0");
 const iso = (year, month, day) => `${year}-${pad(month)}-${pad(day)}`;
 
 const incomeCategories = ["plača", "regres", "nadure", "študentsko delo", "povračilo stroškov", "vračilo deljenega stroška", "prodaja stvari", "dividende", "obresti", "prihodki", "interni transfer", "za pregled", "drugo"];
-const expenseCategories = ["stanovanje", "hrana", "gorivo", "avto", "zavarovanja", "telefon", "šport", "oblačila", "kozmetika", "prosti čas", "naročnine", "restavracije/kava", "potovanja", "darila", "zdravje", "orodje/oprema", "davki", "gotovina", "investicije", "spletni nakupi", "bančni stroški", "interni transfer", "za pregled", "drugo"];
-const expenseCategoryGroups = ["Bivanje", "Hrana", "Transport", "Zdravje in zavarovanja", "Življenjski slog", "Finance in davki", "Nakupi in oprema", "Transferji", "Drugo / za pregled"];
+const expenseCategories = ["stanovanje", "hrana", "gorivo", "avto", "zavarovanja", "telefon", "šport", "oblačila", "kozmetika", "študij", "prosti čas", "naročnine", "restavracije/kava", "potovanja", "darila", "zdravje", "orodje/oprema", "davki", "gotovina", "investicije", "spletni nakupi", "bančni stroški", "interni transfer", "za pregled", "drugo"];
+const expenseCategoryGroups = ["Bivanje", "Hrana", "Transport", "Zdravje in zavarovanja", "Življenjski slog", "Finance in davki", "Nakupi in oprema", "Izobraževanje", "Transferji", "Drugo / za pregled"];
 const expenseCategoryGroupMap = {
   stanovanje: "Bivanje",
   hrana: "Hrana",
@@ -39,6 +39,7 @@ const expenseCategoryGroupMap = {
   "bančni stroški": "Finance in davki",
   oblačila: "Nakupi in oprema",
   kozmetika: "Nakupi in oprema",
+  študij: "Izobraževanje",
   "orodje/oprema": "Nakupi in oprema",
   "spletni nakupi": "Nakupi in oprema",
   gotovina: "Transferji",
@@ -5717,6 +5718,8 @@ function categorizeTransaction(description, type, amount) {
     rule("davki", "upravne takse", "high", "upravna taksa"),
     rule("gorivo", "bencinski servis", "high", "petrol", "omv", "shell", "mol", "ina", "eni", "agip", "tifon", "q max", "bs", "bencinski servis", "gas station", "service station", "fuel", "diesel", "petrol station"),
     rule("hrana", "živila", "high", "spar", "interspar", "mercator", "lidl", "hofer", "plodine", "konzum", "kaufland", "eurospin", "tuš", "tus", "e.leclerc", "leclerc", "jager", "fama", "mlinotest", "pekarna", "bakery", "market", "supermarket", "grocery", "živila", "zivila", "mesnica", "ribarnica"),
+    rule("študij", "šolnina in fakulteta", "high", "fakulteta", "fakultet", "univerza", "university", "faculty", "šolnina", "solnina", "tuition", "vpisnina", "kotizacija", "študij", "studij"),
+    rule("študij", "gradivo in tečaji", "high", "učbenik", "ucbenik", "skripta", "skripte", "coursera", "udemy", "edx"),
     rule("kozmetika", "drogerija", "high", "drogerie", "drogerija", "muller", "douglas", "sephora", "notino", "lush", "rossmann", "parfumerija", "parfumeri", "cosmetics", "kozmetika", "kozmeticn"),
     rule("kozmetika", "storitve", "high", "frizer", "frizerski", "barber", "manikura", "pedikura", "beauty salon", "kozmeticni salon"),
     rule("restavracije/kava", "gostinstvo", "high", "mcdonald", "burger king", "kfc", "subway", "wolt", "glovo", "ehrana", "bolt food", "restaurant", "restavracija", "gostilna", "pizzeria", "pizzerija", "kebab", "sushi", "grill", "fast food", "slaščičarna", "okrepčevalnica"),
