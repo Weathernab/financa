@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "107";
+const APP_VERSION = "108";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -3629,8 +3629,8 @@ function view() {
   const reviewTabs = [["goals", "Cilji"], ["monthly", "Mesečni pregled"], ["analytics", "Analitika"]];
   const views = {
     dashboard: dashboardView,
-    incomes: () => sectionTabs(transactionTabs) + collectionView("incomes", "Prihodki", incomeColumns(), filterHtml("incomes")),
-    expenses: () => sectionTabs(transactionTabs) + collectionView("expenses", "Stroški", expenseColumns(), filterHtml("expenses")),
+    incomes: () => sectionTabs(transactionTabs) + collectionView("incomes", "Prihodki", null, filterHtml("incomes")),
+    expenses: () => sectionTabs(transactionTabs) + collectionView("expenses", "Stroški", null, filterHtml("expenses")),
     transactions: () => sectionTabs(transactionTabs) + transactionsView(),
     accounts: () => sectionTabs(wealthTabs) + accountsView(),
     wealth: () => sectionTabs(wealthTabs) + accountsView(),
@@ -3736,7 +3736,43 @@ function collectionView(collection, title, columns, filtersHtml = "") {
   return `${filtersHtml}<div class="card" data-collection="${collection}" data-total-rows="${state[collection].length}" data-visible-rows="${rows.length}" style="margin-top:14px"><div class="card-header"><h3>${title}</h3><span class="pill">${rows.length} vnosov</span></div><div class="card-body table-wrap">${table(collection, rows, columns)}</div></div>`;
 }
 
+function reimbursementTargetLabel(income) {
+  const expense = income.reimbursedExpenseId ? (state.expenses || []).find((item) => item.id === income.reimbursedExpenseId) : null;
+  if (expense) return `za: ${escapeHtml(expense.name || "strošek")} (${escapeHtml(expense.date)})${income.reimbursementAuto ? " · samodejno" : ""}`;
+  return `zmanjša: ${escapeHtml(income.reimbursementCategory || "drugo")}`;
+}
+
+function ledgerTable(collection, rows) {
+  if (!rows.length) return `<div class="empty">Ni vnosov.</div>`;
+  const isExpense = collection === "expenses";
+  const allocations = isExpense ? reimbursementAllocations() : null;
+  const body = [...rows].sort((a, b) => String(b.date || "").localeCompare(String(a.date || ""))).map((row) => {
+    const amount = Math.abs(Number(row.amount || 0));
+    const reimbursement = !isExpense && isReimbursementIncome(row);
+    const groupLabel = isExpense ? row.categoryGroup || categoryGroupFor(row.category) : reimbursement ? "Vračilo" : `Prihodek · ${incomeClassification(row)}`;
+    const reimbursed = isExpense ? reimbursedAmount(row.id, allocations) : 0;
+    const details = [
+      row.subcategory ? escapeHtml(row.subcategory) : "",
+      isExpense && row.kind && row.kind !== "variabilen" ? escapeHtml(row.kind) : "",
+      reimbursement ? reimbursementTargetLabel(row) : "",
+    ].filter(Boolean).join(" · ");
+    const extra = !isExpense && row.source && row.source !== row.account ? row.source : "";
+    const note = [extra, row.note && !/^(Sinhronizirano|Uvoženo) /.test(row.note) ? row.note : ""].filter(Boolean).join(" · ");
+    return `<tr>
+      <td class="tx-date" title="${escapeAttr(row.date || "")}">${shortDate(row.date)}</td>
+      <td class="tx-desc"><strong>${escapeHtml(row.name || "")}</strong>${note ? `<small class="muted">${escapeHtml(note)}</small>` : ""}<small class="tx-mobile-meta">${shortDate(row.date)} · ${escapeHtml(row.account || "brez računa")} · ${escapeHtml(groupLabel)}</small></td>
+      <td class="tx-group">${escapeHtml(groupLabel)}</td>
+      <td class="tx-category"><span class="pill">${escapeHtml(row.category || "drugo")}</span>${details ? `<small class="muted">${details}</small>` : ""}</td>
+      <td class="tx-account">${escapeHtml(row.account || "Ni določen")}</td>
+      <td class="tx-amount"><strong class="${isExpense ? "negative" : "positive"}">${money(isExpense ? -amount : amount)}</strong>${reimbursed ? `<small class="muted">povrnjeno ${money(reimbursed)} · tvoj del ${money(netExpenseAmount(row, allocations))}</small>` : ""}</td>
+      <td class="tx-menu">${rowActionMenu(collection, row.id)}</td>
+    </tr>`;
+  }).join("");
+  return `<table class="tx-table"><thead><tr><th>Datum</th><th>Opis</th><th>${isExpense ? "Skupina" : "Vrsta"}</th><th>Kategorija</th><th>Račun</th><th class="tx-amount">Znesek</th><th></th></tr></thead><tbody>${body}</tbody></table>`;
+}
+
 function table(collection, rows, columns) {
+  if (["incomes", "expenses"].includes(collection)) return ledgerTable(collection, rows);
   if (!rows.length) return `<div class="empty">Ni vnosov.</div>`;
   return `<table><thead><tr>${columns.map((c) => `<th>${c[0]}</th>`).join("")}<th></th></tr></thead><tbody>${rows.map((row) => `<tr>${columns.map(([, renderCell]) => `<td>${renderCell(row)}</td>`).join("")}<td>${rowActionMenu(collection, row.id)}</td></tr>`).join("")}</tbody></table>`;
 }
@@ -3767,25 +3803,6 @@ function rowActionMenu(collection, id, { allowRule = false, allowDuplicate = fal
       <button class="danger-text" type="button" data-delete="${escapeAttr(key)}">Izbriši</button>
     </div>` : ""}
   </div>`;
-}
-
-function reimbursementTargetLabel(income) {
-  const expense = income.reimbursedExpenseId ? (state.expenses || []).find((item) => item.id === income.reimbursedExpenseId) : null;
-  if (expense) return `za: ${escapeHtml(expense.name || "strošek")} (${escapeHtml(expense.date)})${income.reimbursementAuto ? " · samodejno" : ""}`;
-  return `zmanjša: ${escapeHtml(income.reimbursementCategory || "drugo")}`;
-}
-
-function incomeColumns() {
-  return [["Datum", (r) => r.date], ["Naziv", (r) => r.name], ["Znesek", (r) => `<strong class="positive">${money(r.amount)}</strong>`], ["Kategorija", (r) => isReimbursementIncome(r) ? `${escapeHtml(r.category)}<br><small class="muted">${reimbursementTargetLabel(r)}</small>` : r.category], ["Vrsta", (r) => isReimbursementIncome(r) ? `<span class="pill">vračilo</span>` : `<span class="pill">${incomeClassification(r)}</span>`], ["Vir", (r) => r.source], ["Račun", (r) => r.account || "Ni določen"], ["Opomba", (r) => r.note || ""]];
-}
-
-function expenseColumns() {
-  const allocations = reimbursementAllocations();
-  const amountHtml = (r) => {
-    const reimbursed = reimbursedAmount(r.id, allocations);
-    return `<strong class="negative">${money(r.amount)}</strong>${reimbursed ? `<br><small class="muted">povrnjeno ${money(reimbursed)} · tvoj del ${money(netExpenseAmount(r, allocations))}</small>` : ""}`;
-  };
-  return [["Datum", (r) => r.date], ["Naziv", (r) => r.name], ["Znesek", amountHtml], ["Skupina", (r) => r.categoryGroup || categoryGroupFor(r.category)], ["Kategorija", (r) => r.category], ["Vrsta", (r) => `<span class="pill">${r.kind}</span>`], ["Račun", (r) => r.account], ["Opomba", (r) => r.note || ""]];
 }
 
 function transactionsView() {
@@ -4290,22 +4307,6 @@ function modernTransactionsTable(rows, { review = false, monthHeaders = false } 
     </tr>`;
   }).join("");
   return `<table class="tx-table"><thead><tr><th>Datum</th><th>Opis</th><th>Skupina</th><th>Kategorija</th><th>Račun</th><th class="tx-amount">Znesek</th><th></th></tr></thead><tbody>${body}</tbody></table>`;
-}
-
-function transactionsTable(rows) {
-  if (!rows.length) return `<div class="empty">Ni transakcij.</div>`;
-  return `<table><thead><tr><th>Datum</th><th>Opis</th><th>Skupina</th><th>Kategorija</th><th>Račun</th><th>Status</th><th>Znesek</th><th></th></tr></thead><tbody>
-    ${rows.map((tx) => `<tr class="${tx.status === "za pregled" ? "review-row" : ""}">
-      <td>${escapeHtml(tx.date || "")}</td>
-      <td>${escapeHtml(tx.description || "")}<br><small class="muted">${escapeHtml(tx.source || "")} ${tx.confidence ? "· " + (confidenceLevels[tx.confidence] || tx.confidence) : ""}</small></td>
-      <td>${escapeHtml(tx.categoryGroup || categoryGroupFor(tx.category))}</td>
-      <td><span class="pill">${escapeHtml(tx.category || "za pregled")}</span>${tx.subcategory ? `<br><small class="muted">${escapeHtml(tx.subcategory)}</small>` : ""}</td>
-      <td>${escapeHtml(tx.account || "")}</td>
-      <td>${escapeHtml(tx.status || "")}</td>
-      <td><strong class="${Number(tx.amount) < 0 ? "negative" : "positive"}">${money(Math.abs(Number(tx.amount || 0)))}</strong></td>
-      <td>${rowActionMenu("transactions", tx.id, { allowRule: !tx.transferManaged, allowDuplicate: true, allowRecurring: !tx.transferManaged })}</td>
-    </tr>`).join("")}
-  </tbody></table>`;
 }
 
 function liabilityColumns() {
