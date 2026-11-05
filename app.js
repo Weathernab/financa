@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "105";
+const APP_VERSION = "106";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -2263,6 +2263,9 @@ const REIMBURSEMENT_CATEGORY = "vračilo deljenega stroška";
 const REIMBURSEMENT_IGNORED_EXPENSE_CATEGORIES = new Set(["interni transfer", "za pregled", "investicije"]);
 const SHARED_EXPENSE_CATEGORIES = new Set(["restavracije/kava", "potovanja", "prosti čas", "hrana", "darila", "šport", "gorivo"]);
 
+const REIMBURSEMENT_DAYS_BEFORE = 60;
+const REIMBURSEMENT_DAYS_AFTER = 60;
+
 function isReimbursementIncome(income) {
   return income?.category === REIMBURSEMENT_CATEGORY;
 }
@@ -2352,8 +2355,8 @@ function closedPeriodsForDates(dates) {
 function reimbursementCandidates(income, limit = 25, extraExpenses = []) {
   const date = income?.date || iso(currentYear, currentMonth, now.getDate());
   const amount = Math.abs(Number(income?.amount || 0));
-  const from = shiftIsoDate(date, -60);
-  const to = shiftIsoDate(date, 3);
+  const from = shiftIsoDate(date, -REIMBURSEMENT_DAYS_BEFORE);
+  const to = shiftIsoDate(date, REIMBURSEMENT_DAYS_AFTER);
   const allocations = reimbursementAllocations(income?.id || "");
   return [...(state.expenses || []), ...extraExpenses]
     .filter((expense) =>
@@ -3879,6 +3882,20 @@ function reviewReimbursements() {
 
 // ---- Dialog for choosing the bill a payback covers ----
 
+// Paybacks that arrived before their bill: still in review, or saved without a bill.
+function earlierPaybacksForNewBills(newExpenses) {
+  const bills = (newExpenses || []).filter((expense) => !REIMBURSEMENT_IGNORED_EXPENSE_CATEGORIES.has(expense.category));
+  if (!bills.length) return [];
+  const billAfter = (date) => bills.some((expense) => expense.date >= date && expense.date <= shiftIsoDate(date, REIMBURSEMENT_DAYS_AFTER));
+  const pendingRows = reviewReimbursements()
+    .filter((tx) => billAfter(tx.date))
+    .map((tx) => ({ kind: "tx", id: tx.id }));
+  const unlinked = (state.incomes || [])
+    .filter((income) => isReimbursementIncome(income) && !income.reimbursedExpenseId && billAfter(income.date))
+    .map((income) => ({ kind: "income", id: income.id }));
+  return [...pendingRows, ...unlinked];
+}
+
 function reimbursementDialogEntry(entry) {
   if (!entry) return null;
   if (entry.kind === "income") {
@@ -3896,8 +3913,8 @@ function reimbursementDialogEntry(entry) {
 // by how close the bill is in time to the payback.
 function reimbursementChoices(payback, limit = 40) {
   const allocations = reimbursementAllocations(payback.id || "");
-  const from = shiftIsoDate(payback.date, -60);
-  const to = shiftIsoDate(payback.date, 7);
+  const from = shiftIsoDate(payback.date, -REIMBURSEMENT_DAYS_BEFORE);
+  const to = shiftIsoDate(payback.date, REIMBURSEMENT_DAYS_AFTER);
   return (state.expenses || [])
     .filter((expense) => expense.date >= from && expense.date <= to && Math.abs(Number(expense.amount || 0)) > 0 && !REIMBURSEMENT_IGNORED_EXPENSE_CATEGORIES.has(expense.category))
     .map((expense) => {
@@ -3952,10 +3969,10 @@ function reimbursementDialogHtml() {
       <div class="modal-head"><h3>Poveži vračilo${queue.length > 1 ? ` (${position + 1}/${queue.length})` : ""}</h3><button type="button" class="icon-btn" data-action="close">X</button></div>
       <div class="modal-body">
         <div class="payback-summary"><strong>${escapeHtml(payback.name || "Vračilo")}</strong><span>${escapeHtml(payback.date)} · <b class="positive">+${money(payback.amount)}</b></span></div>
-        <p class="settings-note">Izberi račun, ki ga to vračilo pokriva. Na vrhu so računi, ki se časovno najbolje ujemajo; zatemnjeni so manjši od vračila.</p>
+        <p class="settings-note">Izberi račun, ki ga to vračilo pokriva - lahko tudi poznejšega, če ti je kdo plačal vnaprej. Na vrhu so računi, ki se časovno najbolje ujemajo; zatemnjeni so manjši od vračila.</p>
         <input type="search" placeholder="Išči račun ali kategorijo" data-reimbursement-search aria-label="Išči račun">
         <div class="reimbursement-choices">
-          ${choices.length ? choices.map(choiceHtml).join("") : `<div class="empty">V zadnjih 60 dneh ni računov.</div>`}
+          ${choices.length ? choices.map(choiceHtml).join("") : `<div class="empty">V 60 dneh pred ali po vračilu ni računov.</div>`}
           <label class="reimbursement-choice none">
             <input type="radio" name="target" value="" ${noneChecked ? "checked" : ""} required>
             <span><strong>Brez računa</strong><small>zmanjša izbrano kategorijo v mesecu vračila</small></span>
@@ -6507,7 +6524,10 @@ function confirmImportDraft() {
   const paybacks = transactionRows
     .filter((tx) => tx.category === REIMBURSEMENT_CATEGORY && Number(tx.amount) > 0)
     .map((tx) => (tx.linkedIncomeId ? { kind: "income", id: tx.linkedIncomeId } : { kind: "tx", id: tx.id }));
-  if (paybacks.length) openReimbursementDialog(paybacks);
+  const importedIds = new Set(transactionRows.map((tx) => tx.id));
+  const waiting = earlierPaybacksForNewBills(expenseRows)
+    .filter((entry) => !importedIds.has(entry.id) && !paybacks.some((item) => item.id === entry.id));
+  if (paybacks.length || waiting.length) openReimbursementDialog([...paybacks, ...waiting]);
 }
 
 function rememberSelectedRules(transactions) {
