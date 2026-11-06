@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "112";
+const APP_VERSION = "113";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -401,6 +401,8 @@ let cloudPendingSave = false;
 let lastRemoteProfileCount = null;
 let profileRegistrySupported = null;
 let cloudStatus = { state: "local", message: "Podatki so shranjeni lokalno." };
+// True while the app loads the newest data after opening a profile; the screen may still change.
+let initialSyncRunning = false;
 let lastCloudPayload = "";
 let deferredInstallPrompt = null;
 let mobileNavScrollLeft = 0;
@@ -2196,6 +2198,18 @@ function cloudConflictMessage(freshness) {
 
 async function initializeGoogleSheetsSync() {
   const config = googleSheetsConfig();
+  if (!canUseCloudEndpoint(config) || !canAuthenticateCloud(config)) return initialGoogleSheetsSync();
+  initialSyncRunning = true;
+  try {
+    await initialGoogleSheetsSync();
+  } finally {
+    initialSyncRunning = false;
+    if (currentProfile) render();
+  }
+}
+
+async function initialGoogleSheetsSync() {
+  const config = googleSheetsConfig();
   if (!canUseCloudEndpoint(config) || !canAuthenticateCloud(config)) {
     cloudReady = true;
     cloudStatus = canUseCloudEndpoint(config)
@@ -3562,6 +3576,7 @@ function render() {
             <button class="icon-btn top-icon" title="Nastavitve" aria-label="Nastavitve" data-nav="settings">${icon("settings")}</button>
           </div>
         </div>
+        ${initialSyncRunning ? `<div class="sync-banner" role="status">${icon("sync")}<span>Nalagam najnovejše podatke … Prikaz se lahko še spremeni.</span></div>` : ""}
         ${view()}
       </main>
     </div>
@@ -5001,7 +5016,9 @@ function simpleReviewCard() {
   const rows = reviewTransactions().filter((tx) => tx.status === "za pregled").slice(0, 5);
   const paybacks = possibleReimbursementIncomes().slice(0, 3);
   const total = reviewTransactions().filter((tx) => tx.status === "za pregled").length + possibleReimbursementIncomes().length;
-  if (!total) return "";
+  if (!total) {
+    return `<section class="card simple-card simple-todo"><div class="card-header"><h3>Za urediti</h3></div><div class="card-body"><div class="notice-good">✓ Vse urejeno. Ko bo aplikacija pri kakšni transakciji negotova, se bo pokazala tukaj.</div></div></section>`;
+  }
   const answers = (tx) => {
     const kind = Number(tx.amount) < 0 ? "strošek" : "prihodek";
     const options = simpleEntryCategories(kind).slice(0, 5);

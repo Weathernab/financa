@@ -3871,3 +3871,35 @@ button:disabled {
     font-size: 16px;
   }
 }
+
+.sync-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.sync-banner svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  animation: sync-spin 1.2s linear infinite;
+}
+
+@keyframes sync-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sync-banner svg {
+    animation: none;
+  }
+}
