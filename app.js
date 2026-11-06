@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "110";
+const APP_VERSION = "111";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -2360,6 +2360,8 @@ function reimbursementCandidates(income, limit = 25, extraExpenses = []) {
   const from = shiftIsoDate(date, -REIMBURSEMENT_DAYS_BEFORE);
   const to = shiftIsoDate(date, REIMBURSEMENT_DAYS_AFTER);
   const allocations = reimbursementAllocations(income?.id || "");
+  const payer = payerName(income);
+  const usual = payerUsualCategories(payer, income?.id || "");
   return [...(state.expenses || []), ...extraExpenses]
     .filter((expense) =>
       expense.date >= from
@@ -2379,6 +2381,8 @@ function reimbursementCandidates(income, limit = 25, extraExpenses = []) {
       }
       if (already > 0 && remaining > 0) score += 15;
       if (SHARED_EXPENSE_CATEGORIES.has(expense.category)) score += 10;
+      if (usual.has(expense.category)) score += 12;
+      if (billExpectsPayer(expense, payer, allocations)) score += sharedPeopleNames(expense).length ? 25 : 12;
       score -= Math.abs(daysBetween(expense.date, date)) * 0.6;
       if (expense.date > date) score -= 10;
       return { expense, remaining, score };
@@ -3675,6 +3679,7 @@ function dashboardView() {
     ["Obveznosti", data.liabilities, `${reviewCount} transakcij za pregled`, "warning"],
   ];
   return `
+    ${dataHealthDashboardNotice()}
     <section class="grid metrics">${metrics.map(metricCard).join("")}</section>
     <section class="dashboard-charts" style="margin-top:14px">
       <div class="card dashboard-link" data-nav="networth">
@@ -3803,11 +3808,13 @@ function reimbursementIncomeForRow(collection, id) {
 function rowActionMenu(collection, id, { allowRule = false, allowDuplicate = false, allowRecurring = false } = {}) {
   const key = `${collection}:${id}`;
   const linkIncomeId = rowMenuOpen === key ? reimbursementIncomeForRow(collection, id) : "";
+  const sharedExpenseId = rowMenuOpen === key ? sharedExpenseIdForRow(collection, id) : "";
   return `<div class="row-menu-wrap">
     <button class="icon-btn row-menu-trigger" type="button" title="Več možnosti" aria-label="Več možnosti" data-row-menu="${escapeAttr(key)}">${icon("more")}</button>
     ${rowMenuOpen === key ? `<div class="row-menu">
       <button type="button" data-edit="${escapeAttr(key)}">Uredi</button>
       ${linkIncomeId ? `<button type="button" data-link-reimbursement="${escapeAttr(linkIncomeId)}">Poveži z računom</button>` : ""}
+      ${sharedExpenseId ? `<button type="button" data-shared-expense="${escapeAttr(sharedExpenseId)}">Deljen račun (čakam vračilo)</button>` : ""}
       ${allowDuplicate ? `<button type="button" data-duplicate-transaction="${escapeAttr(id)}">Podvoji</button>` : ""}
       ${allowRecurring ? `<button type="button" data-recurring-from-transaction="${escapeAttr(id)}">Nastavi kot ponavljajoče</button>` : ""}
       ${allowRule ? `<button type="button" data-rule-from-transaction="${escapeAttr(id)}">Zapomni pravilo</button>` : ""}
@@ -3822,7 +3829,7 @@ function transactionsView() {
   const reviewCard = review.length
     ? `<section class="card review-card"><div class="card-header"><div><h3>Za pregled</h3><p>Te transakcije potrebujejo tvojo potrditev kategorije.</p></div><span class="pill">${review.length} odprtih</span></div>${reviewReimbursements().length ? `<div class="card-body review-bulk"><button class="button" type="button" data-action="link-review-reimbursements">Poveži vračila z računi (${reviewReimbursements().length})</button></div>` : ""}<div class="card-body table-wrap">${modernTransactionsTable(review, { review: true })}</div></section>`
     : "";
-  const topCards = [reviewCard, possibleReimbursementsCard(), unusualExpensesCard()].filter(Boolean);
+  const topCards = [dataHealthCard(), reviewCard, possibleReimbursementsCard(), openPaybacksCard(), unusualExpensesCard()].filter(Boolean);
   const transferCount = (state.transactions || []).filter((t) => t.status === "interni transfer").length;
   return `${topCards.join(`<div style="height:18px"></div>`)}
   ${hasRecurringRules() ? recurringTransactionsView() : ""}
@@ -3925,19 +3932,21 @@ function reimbursementDialogEntry(entry) {
   if (!entry) return null;
   if (entry.kind === "income") {
     const income = (state.incomes || []).find((item) => item.id === entry.id);
-    return income ? { ...entry, income, payback: { id: income.id, date: income.date, amount: Math.abs(Number(income.amount || 0)), name: income.name } } : null;
+    return income ? { ...entry, income, payback: { id: income.id, date: income.date, amount: Math.abs(Number(income.amount || 0)), name: income.name, originalDescription: income.originalDescription || "" } } : null;
   }
   const tx = (state.transactions || []).find((item) => item.id === entry.id);
   if (!tx) return null;
   const income = tx.linkedIncomeId ? (state.incomes || []).find((item) => item.id === tx.linkedIncomeId) : null;
-  if (income) return { kind: "income", id: income.id, income, payback: { id: income.id, date: income.date, amount: Math.abs(Number(income.amount || 0)), name: income.name } };
-  return { ...entry, tx, payback: { id: "", date: tx.date, amount: Math.abs(Number(tx.amount || 0)), name: tx.description } };
+  if (income) return { kind: "income", id: income.id, income, payback: { id: income.id, date: income.date, amount: Math.abs(Number(income.amount || 0)), name: income.name, originalDescription: income.originalDescription || "" } };
+  return { ...entry, tx, payback: { id: "", date: tx.date, amount: Math.abs(Number(tx.amount || 0)), name: tx.description, originalDescription: tx.originalDescription || tx.description } };
 }
 
 // Bills a payback can cover: those it fits (bill not yet paid back in full) first, each group ordered
 // by how close the bill is in time to the payback.
 function reimbursementChoices(payback, limit = 40) {
   const allocations = reimbursementAllocations(payback.id || "");
+  const payer = payerName(payback);
+  const usual = payerUsualCategories(payer, payback.id || "");
   const from = shiftIsoDate(payback.date, -REIMBURSEMENT_DAYS_BEFORE);
   const to = shiftIsoDate(payback.date, REIMBURSEMENT_DAYS_AFTER);
   return (state.expenses || [])
@@ -3946,9 +3955,11 @@ function reimbursementChoices(payback, limit = 40) {
       const total = Math.abs(Number(expense.amount || 0));
       const already = reimbursedAmount(expense.id, allocations);
       const days = daysBetween(expense.date, payback.date);
-      return { expense, total, already, days, fits: total - already >= payback.amount - 0.01 };
+      const expected = billExpectsPayer(expense, payer, allocations);
+      return { expense, total, already, days, fits: total - already >= payback.amount - 0.01, expected, preferred: expected || usual.has(expense.category) };
     })
-    .sort((a, b) => Number(b.fits) - Number(a.fits) || Math.abs(a.days) - Math.abs(b.days) || b.days - a.days)
+    // Bills waiting for this person (or in categories they usually pay back) go first among those that fit.
+    .sort((a, b) => Number(b.fits) - Number(a.fits) || Number(b.preferred) - Number(a.preferred) || Math.abs(a.days) - Math.abs(b.days) || b.days - a.days)
     .slice(0, limit);
 }
 
@@ -3984,9 +3995,11 @@ function reimbursementDialogHtml() {
   }
   const noneChecked = decided && !income.reimbursedExpenseId;
   const categories = visibleCategories(expenseCategories, income?.reimbursementCategory).filter((category) => !REIMBURSEMENT_IGNORED_EXPENSE_CATEGORIES.has(category));
-  const choiceHtml = ({ expense, total, already, days, fits }) => `<label class="reimbursement-choice${expense.id === suggestedId ? " suggested" : ""}${fits ? "" : " too-small"}" data-reimbursement-choice="${escapeAttr(normalizeText(`${expense.name} ${expense.category}`))}">
+  const payer = payerName(payback);
+  const usual = [...payerUsualCategories(payer, payback.id || "")].sort((a, b) => b[1] - a[1]).slice(0, 3);
+  const choiceHtml = ({ expense, total, already, days, fits, expected }) => `<label class="reimbursement-choice${expense.id === suggestedId ? " suggested" : ""}${fits ? "" : " too-small"}" data-reimbursement-choice="${escapeAttr(normalizeText(`${expense.name} ${expense.category}`))}">
       <input type="radio" name="target" value="${escapeAttr(expense.id)}" ${expense.id === currentId ? "checked" : ""} required>
-      <span><strong>${escapeHtml(expense.name || "strošek")}</strong><small>${escapeHtml(expense.date)} · ${dayCountLabel(days)} · ${escapeHtml(expense.category || "")}${already ? ` · že vrnjeno ${money(already)}` : ""}</small></span>
+      <span><strong>${escapeHtml(expense.name || "strošek")}</strong><small>${escapeHtml(expense.date)} · ${dayCountLabel(days)} · ${escapeHtml(expense.category || "")}${already ? ` · že vrnjeno ${money(already)}` : ""}${expected ? ` · čakaš vračilo${sharedPeopleNames(expense).length ? ` (${escapeHtml(sharedPeopleNames(expense).join(", "))})` : ""}` : ""}</small></span>
       <b>${money(total)}</b>${expense.id === suggestedId ? `<em>predlog</em>` : ""}
     </label>`;
   return `<div class="modal-backdrop">
@@ -3994,6 +4007,7 @@ function reimbursementDialogHtml() {
       <div class="modal-head"><h3>Poveži vračilo${queue.length > 1 ? ` (${position + 1}/${queue.length})` : ""}</h3><button type="button" class="icon-btn" data-action="close">X</button></div>
       <div class="modal-body">
         <div class="payback-summary"><strong>${escapeHtml(payback.name || "Vračilo")}</strong><span>${escapeHtml(payback.date)} · <b class="positive">+${money(payback.amount)}</b></span></div>
+        ${payer && usual.length ? `<p class="settings-note payer-hint">${escapeHtml(payer)} običajno vrača: ${usual.map(([category, count]) => `${escapeHtml(category)} (${count}×)`).join(", ")}</p>` : ""}
         <p class="settings-note">Izberi račun, ki ga to vračilo pokriva - lahko tudi poznejšega, če ti je kdo plačal vnaprej. Na vrhu so računi, ki se časovno najbolje ujemajo; zatemnjeni so manjši od vračila.</p>
         <input type="search" placeholder="Išči račun ali kategorijo" data-reimbursement-search aria-label="Išči račun">
         <div class="reimbursement-choices">
@@ -4273,6 +4287,568 @@ function possibleReimbursementsCard() {
   </div></section>`;
 }
 
+// ---- Owner tools: data health and month-end balance check (only the admin profile for now) ----
+
+function isOwnerProfile(profile = currentProfile) {
+  return profile?.role === "admin";
+}
+
+// Descriptions of real own-account moves; anything else marked "interni transfer" without moving a
+// balance is most likely a purchase (e.g. "Notino" paired with a same-day top-up).
+function isOwnTransferText(text) {
+  const value = normalizeText(text);
+  return isTransferLikeText(value) || /(revolut|withsave|varcevaln|savings|vault|pocket|top-?up|atm|bankomat|dvig|gotovin)/.test(value);
+}
+
+const HEALTH_STALE_REVIEW_DAYS = 14;
+const HEALTH_ADJUSTMENT_DAYS = 90;
+const HEALTH_ADJUSTMENT_MIN = 5;
+
+function healthItem(date, label, amount, detail = "", buttons = []) {
+  return { date: date || "", label: label || "vnos", amount: Number(amount || 0), detail, buttons };
+}
+
+function dataHealthIssues(today = iso(currentYear, currentMonth, now.getDate())) {
+  const issues = [];
+  const add = (key, title, hint, items, action = null) => {
+    if (items.length) issues.push({ key, title, hint, items: items.sort((a, b) => String(b.date).localeCompare(String(a.date))), action });
+  };
+  const edit = (collection, id) => ({ label: "Uredi", attrs: `data-edit="${escapeAttr(`${collection}:${id}`)}"` });
+  const ok = (collection, id, label = "V redu") => ({ label, attrs: `data-health-ok="${escapeAttr(`${collection}:${id}`)}"`, secondary: true });
+
+  add(
+    "incomes-without-account",
+    "Prihodki brez povezanega računa",
+    "Rekonstrukcija preteklih stanj in zaključeni meseci jih ne upoštevajo pravilno.",
+    (state.incomes || [])
+      .filter((income) => Math.abs(Number(income.amount || 0)) > 0 && !income.balanceAccountId && findExpenseAccount(income.account || income.source))
+      .map((income) => healthItem(income.date, income.name, Math.abs(Number(income.amount || 0)), income.account || income.source)),
+    { action: "repair-income-balances", label: "Poveži vse" }
+  );
+
+  const unknownAccount = [
+    ...(state.expenses || []).map((item) => ({ item, collection: "expenses", sign: -1 })),
+    ...(state.incomes || []).map((item) => ({ item, collection: "incomes", sign: 1 })),
+  ].filter(({ item }) => item.account && !item.balanceAccountId && !findExpenseAccount(item.account) && !item.healthReviewed);
+  add(
+    "unknown-account",
+    "Vnosi na neobstoječem računu",
+    "Račun s tem imenom ne obstaja, zato vnos ni spremenil nobenega stanja.",
+    unknownAccount.map(({ item, collection, sign }) => healthItem(item.date, item.name, sign * Math.abs(Number(item.amount || 0)), `račun "${item.account}"`, [edit(collection, item.id), ok(collection, item.id)]))
+  );
+
+  add(
+    "purchase-as-transfer",
+    "Nakupi, zapisani kot interni prenos",
+    "Opis ni videti kot prenos med računi. Interni prenos ne spremeni stanja, zato je račun previsok.",
+    (state.transactions || [])
+      .filter((tx) =>
+        tx.status === "interni transfer"
+        && !tx.transferManaged
+        && !tx.balanceAdjustment
+        && !tx.healthReviewed
+        && !isOwnTransferText(tx.originalDescription || tx.description)
+      )
+      .map((tx) => healthItem(tx.date, tx.description, Number(tx.amount || 0), tx.account, [edit("transactions", tx.id), ok("transactions", tx.id, "Je prenos")]))
+  );
+
+  const staleBefore = shiftIsoDate(today, -HEALTH_STALE_REVIEW_DAYS);
+  const staleReview = (state.transactions || []).filter((tx) => tx.status === "za pregled" && tx.date && tx.date < staleBefore);
+  add(
+    "stale-review",
+    "Dolgo nepregledane transakcije",
+    `Starejše od ${HEALTH_STALE_REVIEW_DAYS} dni. Dokler niso potrjene, ne vplivajo na stanja.`,
+    staleReview.map((tx) => healthItem(tx.date, tx.description, Number(tx.amount || 0), tx.account)),
+    { action: "nav:transactions", label: "Odpri pregled" }
+  );
+
+  const expenseIds = new Set((state.expenses || []).map((expense) => expense.id));
+  add(
+    "broken-reimbursements",
+    "Vračila brez računa",
+    "Račun, ki ga je vračilo pokrivalo, je bil izbrisan.",
+    (state.incomes || [])
+      .filter((income) => isReimbursementIncome(income) && income.reimbursedExpenseId && income.reimbursedExpenseId !== "auto" && !expenseIds.has(income.reimbursedExpenseId))
+      .map((income) => healthItem(income.date, income.name, Math.abs(Number(income.amount || 0)), "", [{ label: "Poveži", attrs: `data-link-reimbursement="${escapeAttr(income.id)}"` }]))
+  );
+
+  const adjustmentsSince = shiftIsoDate(today, -HEALTH_ADJUSTMENT_DAYS);
+  add(
+    "adjustments",
+    "Uskladitve stanja",
+    "Aplikacija se ni ujemala z izpiskom. Razlika pomeni, da nekaj manjka ali je zapisano dvakrat.",
+    (state.transactions || [])
+      .filter((tx) => tx.balanceAdjustment && tx.date >= adjustmentsSince && Math.abs(Number(tx.amount || 0)) >= HEALTH_ADJUSTMENT_MIN && !tx.healthReviewed)
+      .map((tx) => healthItem(tx.date, tx.description, Number(tx.amount || 0), tx.source, [ok("transactions", tx.id)]))
+  );
+
+  const firstClosure = (state.monthClosures || []).map((closure) => `${closure.year}-${pad(Number(closure.month))}`).sort()[0];
+  add(
+    "unclosed-months",
+    "Nezaključeni pretekli meseci",
+    "Zaključek shrani neto vrednost in budgete ter omogoči preverjanje stanj ob koncu meseca.",
+    completedActivityMonths(12)
+      .filter(([month, year]) => !monthClosure(month, year) && (!firstClosure || `${year}-${pad(month)}` > firstClosure))
+      .map(([month, year]) => healthItem(iso(year, month, 1), monthLabel(month, year), 0, "", [{ label: "Odpri", attrs: `data-open-month="${year}-${month}"` }]))
+  );
+  return issues;
+}
+
+function dataHealthCount(issues = dataHealthIssues()) {
+  return issues.reduce((total, issue) => total + issue.items.length, 0);
+}
+
+function dataHealthCard() {
+  if (!isOwnerProfile()) return "";
+  const issues = dataHealthIssues();
+  if (!issues.length) return "";
+  const button = ({ label, attrs, secondary }) => `<button class="button${secondary ? " secondary" : ""}" type="button" ${attrs}>${escapeHtml(label)}</button>`;
+  const actionButton = (action) => action.action.startsWith("nav:")
+    ? `<button class="button secondary" type="button" data-nav="${escapeAttr(action.action.slice(4))}">${escapeHtml(action.label)}</button>`
+    : `<button class="button secondary" type="button" data-action="${escapeAttr(action.action)}">${escapeHtml(action.label)}</button>`;
+  return `<section class="card review-card health-card"><div class="card-header"><div><h3>Zdravje podatkov</h3><p>Stvari, zaradi katerih stanja računov ali analitika morda niso pravilni. Vidno samo v tvojem profilu.</p></div><span class="pill">${dataHealthCount(issues)}</span></div><div class="card-body">
+    ${issues.map((issue) => `<div class="health-group">
+      <div class="health-group-head"><div><strong>${escapeHtml(issue.title)} <span class="muted">(${issue.items.length})</span></strong><small>${escapeHtml(issue.hint)}</small></div>${issue.action ? actionButton(issue.action) : ""}</div>
+      <div class="unusual-list">${issue.items.slice(0, 5).map((item) => `<div class="unusual-row">
+        <div><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml([item.date && issue.key !== "unclosed-months" ? item.date : "", item.detail].filter(Boolean).join(" · "))}</small></div>
+        ${item.amount ? `<strong class="${item.amount < 0 ? "negative" : "positive"}">${money(item.amount)}</strong>` : "<span></span>"}
+        <div class="unusual-actions">${item.buttons.map(button).join("")}</div>
+      </div>`).join("")}${issue.items.length > 5 ? `<small class="muted">in še ${issue.items.length - 5}</small>` : ""}</div>
+    </div>`).join("")}
+  </div></section>`;
+}
+
+function dataHealthDashboardNotice() {
+  if (!isOwnerProfile()) return "";
+  const count = dataHealthCount();
+  if (!count) return "";
+  return `<section class="card health-notice"><div class="card-body"><span><strong>Zdravje podatkov:</strong> ${count} ${count % 100 === 1 ? "opozorilo" : count % 100 === 2 ? "opozorili" : count % 100 === 3 || count % 100 === 4 ? "opozorila" : "opozoril"}</span><button class="button secondary" type="button" data-nav="transactions">Preglej</button></div></section>`;
+}
+
+function markHealthReviewed(key) {
+  const [collection, id] = String(key || "").split(":");
+  const item = (state[collection] || []).find((row) => row.id === id);
+  if (!item) return;
+  replaceRecordById(collection, id, { ...item, healthReviewed: true });
+  save();
+  render();
+}
+
+// Accounts whose real balance can be read from a bank app at month end.
+function monthEndBalanceAccounts() {
+  return (state.accounts || []).filter((account) => isSpendableAccount(account) && !["ibkr", "crypto"].includes(canonicalAssetKey(account)));
+}
+
+function lastDayOfMonth(month, year) {
+  return iso(Number(year), Number(month), new Date(Number(year), Number(month), 0).getDate());
+}
+
+const MONTH_END_WARNING = 20;
+
+function parseInputAmount(value) {
+  const text = String(value ?? "").trim().replace(/\s/g, "").replace(",", ".");
+  if (!text) return null;
+  const number = Number(text);
+  return Number.isFinite(number) ? number : null;
+}
+
+function monthEndBalanceDifferences(month, year, values = {}) {
+  const date = lastDayOfMonth(month, year);
+  const reconstructed = reconstructAccountsAsOf(date);
+  return monthEndBalanceAccounts().map((account) => {
+    const actual = parseInputAmount(values[`actual:${account.id}`]);
+    if (actual === null) return null;
+    const app = Number(reconstructed.find((row) => row.id === account.id)?.balance || 0);
+    const difference = roundCents(actual - app);
+    return Math.abs(difference) >= 0.01 ? { account, actual, app, difference, date } : null;
+  }).filter(Boolean);
+}
+
+function applyMonthEndAdjustments(differences, month, year) {
+  const adjustments = differences.map(({ account, actual, app, difference, date }) => ({
+    id: crypto.randomUUID(),
+    date,
+    description: `Uskladitev ob zaključku meseca (${account.name})`,
+    amount: difference,
+    currency: "EUR",
+    category: "interni transfer",
+    categoryGroup: categoryGroupFor("interni transfer"),
+    subcategory: "uskladitev ob zaključku",
+    account: account.name,
+    type: "uskladitev",
+    status: "uskladitev",
+    source: "Zaključek meseca",
+    confidence: "manual",
+    note: `Dejansko stanje ${money(actual)} na ${date}, v aplikaciji ${money(app)} (${monthLabel(month, year)}).`,
+    balanceAdjustment: true,
+    adjustmentAccountId: account.id,
+    balanceImpact: difference,
+  }));
+  const byAccount = new Map(differences.map((item) => [item.account.id, item.difference]));
+  state.accounts = (state.accounts || []).map((account) => (byAccount.has(account.id) ? { ...account, balance: roundCents(Number(account.balance || 0) + byAccount.get(account.id)) } : account));
+  state.transactions = [...adjustments, ...(state.transactions || [])];
+  return adjustments;
+}
+
+function monthEndCheckHtml(month, year) {
+  if (!isOwnerProfile()) return "";
+  const accounts = monthEndBalanceAccounts();
+  if (!accounts.length) return "";
+  const date = lastDayOfMonth(month, year);
+  const reconstructed = reconstructAccountsAsOf(date);
+  return `<div class="full month-end-check">
+    <strong>Dejanska stanja na ${escapeHtml(date)}</strong>
+    <p class="settings-note">Vpiši stanje iz bančne aplikacije ali izpiska. Prazno polje se ne preverja. Razlika se zapiše kot vidna uskladitev na zadnji dan meseca.</p>
+    <div class="month-end-grid">${accounts.map((account) => {
+      const app = Number(reconstructed.find((row) => row.id === account.id)?.balance || 0);
+      return `<label>${escapeHtml(account.name)}<input type="number" step="0.01" inputmode="decimal" name="actual:${escapeAttr(account.id)}" placeholder="${escapeAttr(app.toFixed(2))}"><small>v aplikaciji ${money(app)}</small></label>`;
+    }).join("")}</div>
+  </div>`;
+}
+
+// Bank statements are not reconciled automatically (their layout is not known well enough);
+// after an import the owner sees how the closing balance compares.
+function bankStatementMessages() {
+  if (!isOwnerProfile()) return [];
+  return statementBalances({ includeOtherAccounts: true })
+    .filter((item) => !isRevolutAccountReference(item.account))
+    .map((item) => {
+      const account = statementAccount(item.account);
+      if (!account) return "";
+      const app = Number(reconstructAccountsAsOf(item.date).find((row) => row.id === account.id)?.balance || 0) + pendingReviewAmount(item.account, item.date);
+      const difference = roundCents(item.balance - app);
+      return Math.abs(difference) < 0.01
+        ? `${account.name}: stanje se ujema z izpiskom (${money(item.balance)} na ${item.date}).`
+        : `${account.name}: po izpisku ${money(item.balance)} na ${item.date}, v aplikaciji ${money(app)} (razlika ${signed(difference)}). Stanja nisem spremenil - preveri ga ob zaključku meseca.`;
+    })
+    .filter(Boolean);
+}
+
+// ---- Shared bills: who still owes you ----
+
+function isSharedSettled(expense) {
+  return expense?.sharedSettled === true || expense?.sharedSettled === "true";
+}
+
+function sharedPeopleNames(expense) {
+  return String(expense?.sharedWith || "").split(/[,;\n]/).map((name) => name.trim()).filter(Boolean);
+}
+
+// "Transfer from MIHA KERN" -> "MIHA KERN"
+function payerName(payback) {
+  const text = String(payback?.originalDescription || payback?.name || payback?.description || "").split(" · ")[0].trim();
+  const match = text.match(/^(?:transfer from|from|od)\s+(.+)$/i);
+  return match ? match[1].replace(/\s+/g, " ").trim() : "";
+}
+
+function nameTokens(name) {
+  return normalizeText(name).split(/[^a-z0-9]+/).filter((token) => token.length >= 2);
+}
+
+// "Miha" matches "MIHA KERN"; "Miha Novak" does not.
+function namesMatch(first, second) {
+  const a = nameTokens(first);
+  const b = nameTokens(second);
+  if (!a.length || !b.length) return false;
+  const [small, large] = a.length <= b.length ? [a, b] : [b, a];
+  return small.every((token) => large.includes(token));
+}
+
+function sharedExpectedAmount(expense) {
+  return Math.min(Math.max(0, Number(expense?.sharedExpected || 0)), Math.abs(Number(expense?.amount || 0)));
+}
+
+function openPaybacks(allocations = reimbursementAllocations()) {
+  return (state.expenses || [])
+    .filter((expense) => sharedExpectedAmount(expense) > 0 && !isSharedSettled(expense))
+    .map((expense) => {
+      const expected = sharedExpectedAmount(expense);
+      const received = reimbursedAmount(expense.id, allocations);
+      const missing = roundCents(expected - received);
+      const names = sharedPeopleNames(expense);
+      const paybacks = (state.incomes || []).filter((income) => isReimbursementIncome(income) && income.reimbursedExpenseId === expense.id);
+      let people = names.map((name) => {
+        const share = expected / names.length;
+        const paid = sum(paybacks.filter((payback) => namesMatch(payerName(payback), name)));
+        return { name, share, paid, missing: Math.max(0, roundCents(share - paid)) };
+      });
+      // Paybacks without a recognisable name (e.g. bank "PLAČANO Z ...") still reduce what is owed.
+      const named = people.reduce((total, person) => total + person.missing, 0);
+      if (named > missing + 0.009 && named > 0) {
+        const scale = Math.max(0, missing) / named;
+        people = people.map((person) => ({ ...person, missing: roundCents(person.missing * scale) }));
+      }
+      return { expense, expected, received, missing, people };
+    })
+    .filter((item) => item.missing > 0.009)
+    .sort((a, b) => String(a.expense.date).localeCompare(String(b.expense.date)));
+}
+
+function owedByPerson(open = openPaybacks()) {
+  const totals = new Map();
+  for (const item of open) {
+    const people = item.people.length ? item.people : [{ name: "Brez imena", missing: item.missing }];
+    for (const person of people) {
+      if (person.missing <= 0.009) continue;
+      const key = [...totals.keys()].find((name) => namesMatch(name, person.name)) || person.name;
+      const current = totals.get(key) || { name: key, missing: 0, bills: 0 };
+      totals.set(key, { ...current, missing: roundCents(current.missing + person.missing), bills: current.bills + 1 });
+    }
+  }
+  return [...totals.values()].sort((a, b) => b.missing - a.missing);
+}
+
+function billCountLabel(count) {
+  const n = count % 100;
+  return `${count} ${n === 1 ? "račun" : n === 2 ? "računa" : n === 3 || n === 4 ? "računi" : "računov"}`;
+}
+
+function openPaybacksCard() {
+  const open = openPaybacks();
+  if (!open.length) return "";
+  const total = roundCents(open.reduce((sum, item) => sum + item.missing, 0));
+  const people = owedByPerson(open);
+  return `<section class="card review-card owed-card"><div class="card-header"><div><h3>Kdo mi še dolguje</h3><p>Skupni računi, za katere še čakaš na vračilo.</p></div><span class="pill">${money(total)}</span></div><div class="card-body">
+    ${people.length ? `<div class="owed-people">${people.map((person) => `<span><b>${escapeHtml(person.name)}</b> ${money(person.missing)} <small>${billCountLabel(person.bills)}</small></span>`).join("")}</div>` : ""}
+    <div class="unusual-list">${open.map((item) => {
+      const waiting = item.people.filter((person) => person.missing > 0.009).map((person) => person.name);
+      return `<div class="unusual-row">
+      <div><strong>${escapeHtml(item.expense.name || "strošek")}</strong><small>${escapeHtml(item.expense.date)} · račun ${money(Math.abs(Number(item.expense.amount || 0)))} · vrnjeno ${money(item.received)} od ${money(item.expected)}${waiting.length ? ` · čakaš: ${escapeHtml(waiting.join(", "))}` : ""}</small></div>
+      <strong class="warning">${money(item.missing)}</strong>
+      <div class="unusual-actions"><button class="button secondary" type="button" data-shared-expense="${escapeAttr(item.expense.id)}">Uredi</button><button class="button secondary" type="button" data-shared-settle="${escapeAttr(item.expense.id)}">Poravnano</button></div>
+    </div>`;
+    }).join("")}</div>
+    <p class="analysis-note">Vračila povežeš z računom kot doslej. Ko je vrnjeno vse, račun izgine s seznama. "Poravnano" uporabi, če so ti vrnili drugače (npr. z gotovino).</p>
+  </div></section>`;
+}
+
+function sharedExpenseIdForRow(collection, id) {
+  if (collection === "expenses") return (state.expenses || []).some((expense) => expense.id === id) ? id : "";
+  if (collection === "transactions") {
+    const tx = (state.transactions || []).find((item) => item.id === id);
+    return tx && Number(tx.amount) < 0 && tx.linkedExpenseId && (state.expenses || []).some((expense) => expense.id === tx.linkedExpenseId) ? tx.linkedExpenseId : "";
+  }
+  return "";
+}
+
+function openSharedExpenseModal(expenseId) {
+  const expense = (state.expenses || []).find((item) => item.id === expenseId);
+  if (!expense) return;
+  modal = { collection: "sharedExpense", title: "Deljen račun", item: { id: expense.id } };
+  rowMenuOpen = "";
+  render();
+}
+
+function sharedExpenseModalHtml() {
+  const expense = (state.expenses || []).find((item) => item.id === modal.item?.id);
+  if (!expense) return "";
+  const amount = Math.abs(Number(expense.amount || 0));
+  const expected = sharedExpectedAmount(expense);
+  const peopleCount = Number(expense.sharedPeople || 0) || "";
+  return `<div class="modal-backdrop"><form class="modal" data-shared-expense-form data-amount="${escapeAttr(amount)}">
+    <div class="modal-head"><h3>Deljen račun</h3><button type="button" class="icon-btn" data-action="close">X</button></div>
+    <div class="modal-body form-grid">
+      <div class="payback-summary full"><strong>${escapeHtml(expense.name || "strošek")}</strong><span>${escapeHtml(expense.date)} · <b class="negative">${money(-amount)}</b></span></div>
+      <label>Število oseb skupaj s tabo<input type="number" name="people" min="2" step="1" inputmode="numeric" value="${escapeAttr(peopleCount)}"></label>
+      <label>Koliko ti morajo vrniti<input type="number" name="expected" min="0" step="0.01" inputmode="decimal" value="${expected ? escapeAttr(expected.toFixed(2)) : ""}"></label>
+      <label class="full">Kdo ti mora vrniti<input type="text" name="sharedWith" placeholder="npr. Miha, Ana" value="${escapeAttr(expense.sharedWith || "")}"></label>
+      <p class="settings-note full">Ko vpišeš število oseb, se znesek izračuna kot delež ostalih (enako razdeljeno). Imena so neobvezna; z njimi aplikacija pokaže, kdo ti še dolguje, in ob vračilu prepozna pravi račun.</p>
+    </div>
+    <div class="modal-foot">${expected ? `<button type="button" class="button secondary" data-action="shared-clear">Ni deljen</button>` : ""}<button type="button" class="button secondary" data-action="close">Prekliči</button><button class="button" type="submit">Shrani</button></div>
+  </form></div>`;
+}
+
+function saveSharedExpense(values) {
+  const expense = (state.expenses || []).find((item) => item.id === modal?.item?.id);
+  if (!expense) return closeModal();
+  const amount = Math.abs(Number(expense.amount || 0));
+  const people = Math.max(0, Math.round(Number(values.people || 0)));
+  const typed = parseInputAmount(values.expected);
+  const expected = roundCents(Math.min(amount, typed !== null ? typed : people > 1 ? amount * (people - 1) / people : 0));
+  const sharedWith = sharedPeopleNames({ sharedWith: values.sharedWith }).join(", ");
+  replaceRecordById("expenses", expense.id, expected > 0
+    ? { ...expense, sharedExpected: expected, sharedPeople: people > 1 ? people : "", sharedWith, sharedSettled: false }
+    : { ...expense, sharedExpected: 0, sharedPeople: "", sharedWith: "", sharedSettled: false });
+  save();
+  closeModal();
+}
+
+function clearSharedExpense() {
+  saveSharedExpense({ expected: "0", people: "", sharedWith: "" });
+}
+
+function settleSharedExpense(expenseId) {
+  const expense = (state.expenses || []).find((item) => item.id === expenseId);
+  if (!expense) return;
+  replaceRecordById("expenses", expenseId, { ...expense, sharedSettled: true });
+  save();
+  render();
+}
+
+// Categories of bills a person paid back before: Miha usually pays back restaurants.
+function payerUsualCategories(payer, excludeIncomeId = "") {
+  const counts = new Map();
+  if (!payer) return counts;
+  const expenses = new Map((state.expenses || []).map((expense) => [expense.id, expense]));
+  for (const income of state.incomes || []) {
+    if (!isReimbursementIncome(income) || income.id === excludeIncomeId || !namesMatch(payerName(income), payer)) continue;
+    const category = expenses.get(income.reimbursedExpenseId)?.category || (income.reimbursedExpenseId ? "" : income.reimbursementCategory);
+    if (category) counts.set(category, (counts.get(category) || 0) + 1);
+  }
+  return counts;
+}
+
+// A bill marked as shared with this payer (or with nobody named) that is still waiting for money.
+function billExpectsPayer(expense, payer, allocations) {
+  if (sharedExpectedAmount(expense) <= 0 || isSharedSettled(expense)) return false;
+  if (reimbursedAmount(expense.id, allocations) >= sharedExpectedAmount(expense) - 0.009) return false;
+  const names = sharedPeopleNames(expense);
+  return !names.length || (payer && names.some((name) => namesMatch(name, payer)));
+}
+
+// ---- Analysis: merchants, own baseline, savings goal ----
+
+// Rent, taxes and insurance are one bill per month, not places you choose to visit.
+const MERCHANT_IGNORED_CATEGORIES = new Set(["interni transfer", "za pregled", "investicije", "gotovina", "stanovanje", "davki", "zavarovanja"]);
+const DISCRETIONARY_CATEGORIES = new Set(["restavracije/kava", "prosti čas", "naročnine", "oblačila", "potovanja", "spletni nakupi", "kozmetika", "šport", "darila"]);
+
+function merchantLabel(name) {
+  return String(name || "").replace(/^VI[-\s]+/i, "").split(",")[0].replace(/\s+/g, " ").trim() || "neznano";
+}
+
+function mostCommon(values) {
+  const counts = new Map();
+  values.forEach((value) => counts.set(value, (counts.get(value) || 0) + 1));
+  return [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
+}
+
+function merchantStats(months = completedActivityMonths(6)) {
+  if (!months.length) return [];
+  const allocations = reimbursementAllocations();
+  const groups = new Map();
+  months.flatMap(([month, year]) => reportingExpenses(month, year, allocations))
+    .filter((expense) => !expense.reimbursementOffset && Math.abs(Number(expense.amount || 0)) > 0 && !MERCHANT_IGNORED_CATEGORIES.has(expense.category) && expense.kind !== "enkratni večji")
+    .forEach((expense) => {
+      const key = subscriptionMerchantKey(expense.name);
+      if (!key) return;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(expense);
+    });
+  return [...groups].map(([key, list]) => {
+    const total = roundCents(list.reduce((sum, expense) => sum + Math.abs(Number(expense.amount || 0)), 0));
+    const perMonth = total / months.length;
+    return {
+      key,
+      label: merchantLabel(mostCommon(list.map((expense) => expense.name))),
+      category: mostCommon(list.map((expense) => expense.category)),
+      visits: list.length,
+      monthsActive: new Set(list.map((expense) => String(expense.date).slice(0, 7))).size,
+      total,
+      average: total / list.length,
+      perMonth,
+      perYear: perMonth * 12,
+    };
+  }).filter((item) => item.visits >= 2).sort((a, b) => b.perMonth - a.perMonth);
+}
+
+function visitCountLabel(count) {
+  const n = count % 100;
+  return `${count} ${n === 1 ? "obisk" : n === 2 ? "obiska" : n === 3 || n === 4 ? "obiski" : "obiskov"}`;
+}
+
+function inMonthsLabel(count) {
+  return `v ${count} ${count === 1 ? "mesecu" : "mesecih"}`;
+}
+
+function isSmallFrequent(item, monthCount) {
+  return item.average <= 20 && item.visits >= Math.max(4, monthCount * 1.5);
+}
+
+function merchantStatsHtml() {
+  const months = completedActivityMonths(6);
+  const stats = merchantStats(months).slice(0, 12);
+  if (!stats.length) return `<div class="empty">Ko bo zaključen vsaj en mesec z več nakupi pri istem trgovcu, se bodo pokazali tukaj.</div>`;
+  return `<div class="recommendation-list">${stats.map((item) => `<div class="recommendation merchant-row">
+    <div><strong>${escapeHtml(item.label)}${isSmallFrequent(item, months.length) ? ` <span class="pill">majhno, pogosto</span>` : ""}</strong><span>${visitCountLabel(item.visits)} ${inMonthsLabel(item.monthsActive)} · povp. ${money(item.average)} · ${escapeHtml(item.category || "")}</span></div>
+    <b>${money(item.perMonth)}/mes<small>~${money(item.perYear)}/leto</small></b>
+  </div>`).join("")}</div>
+  <p class="analysis-note">Zadnjih ${months.length} zaključenih mesecev, tvoj del (brez vračil), brez prenosov, gotovine, stanovanja, davkov, zavarovanj in enkratnih večjih stroškov. Mesečni znesek je skupaj deljeno s ${months.length} meseci.</p>`;
+}
+
+const OWN_BASELINE_MIN_MONTHS = 4;
+const OWN_BASELINE_IGNORED_CATEGORIES = new Set(["interni transfer", "za pregled", "investicije", "stanovanje", "davki", "zavarovanja"]);
+
+// Categories where the last three closed months are clearly above your usual level (median of up to six months).
+function ownBaselineSuggestions(months = completedActivityMonths(6)) {
+  if (months.length < OWN_BASELINE_MIN_MONTHS) return null;
+  const recent = months.slice(-3);
+  const entriesByMonth = months.map(([month, year]) => new Map(analyticsRecurringExpenseEntries(month, year)));
+  const categories = new Set(entriesByMonth.flatMap((entries) => [...entries.keys()]));
+  return [...categories]
+    .filter((category) => !OWN_BASELINE_IGNORED_CATEGORIES.has(category))
+    .map((category) => {
+      const values = entriesByMonth.map((entries) => Number(entries.get(category) || 0));
+      const baseline = median(values);
+      const recentAverage = average(values.slice(-recent.length));
+      const saving = roundCents(recentAverage - baseline);
+      return { category, baseline, value: recentAverage, saving, activeMonths: values.filter((value) => value > 0).length };
+    })
+    .filter((item) => item.saving >= 15 && item.value >= item.baseline * 1.15)
+    .sort((a, b) => b.saving - a.saving);
+}
+
+function savingsGoalPercent() {
+  const value = Number(state.settings?.savingsGoalPercent);
+  return Number.isFinite(value) && value > 0 && value < 100 ? value : 20;
+}
+
+function savingsGoalStatus(months = completedActivityMonths(6)) {
+  const recent = months.slice(-3);
+  if (!recent.length) return null;
+  const data = recent.map(([month, year]) => analyticsMonthlyData(month, year));
+  const income = average(data.map((item) => item.incomeTotal));
+  const saved = average(data.map((item) => item.saved));
+  const goal = savingsGoalPercent();
+  const target = income * goal / 100;
+  const gap = roundCents(Math.max(0, target - saved));
+  const levers = [];
+  const own = ownBaselineSuggestions(months);
+  (own || []).forEach((item) => levers.push({ label: item.category, amount: item.saving, hint: `nad tvojo običajno ravnjo (${money(item.baseline)} na mesec)` }));
+  const seenCategories = new Set(levers.map((item) => item.label));
+  merchantStats(months)
+    .filter((item) => DISCRETIONARY_CATEGORIES.has(item.category) && !seenCategories.has(item.category) && item.visits >= 3)
+    .slice(0, 4)
+    .forEach((item) => levers.push({ label: item.label, amount: roundCents(item.perMonth / 2), hint: `pol manj obiskov (zdaj ${money(item.perMonth)} na mesec)` }));
+  let covered = 0;
+  const plan = [];
+  for (const lever of levers) {
+    if (covered >= gap - 0.009) break;
+    covered = roundCents(covered + lever.amount);
+    plan.push({ ...lever, covered });
+  }
+  return { months: recent.length, income, saved, rate: income ? saved / income * 100 : 0, goal, target, gap, plan, covered };
+}
+
+function savingsGoalHtml() {
+  const status = savingsGoalStatus();
+  if (!status) return `<div class="empty">Cilj bo na voljo po prvem zaključenem mesecu.</div>`;
+  const input = `<label class="goal-input">Cilj <input type="number" min="1" max="90" step="1" inputmode="numeric" value="${escapeAttr(status.goal)}" data-savings-goal> % rednih prihodkov</label>`;
+  if (!status.income) return `${input}<div class="empty">V zadnjih zaključenih mesecih ni rednih prihodkov.</div>`;
+  const progress = Math.max(0, Math.min(100, status.rate / status.goal * 100));
+  const summary = `<div class="forecast-grid">
+    <div><span>Povprečen prihranek</span><strong class="${status.saved >= 0 ? "positive" : "negative"}">${money(status.saved)}</strong><small>${NUMBER.format(status.rate)} % rednih prihodkov</small></div>
+    <div><span>Cilj na mesec</span><strong>${money(status.target)}</strong><small>${NUMBER.format(status.goal)} % od ${money(status.income)}</small></div>
+    <div><span>Manjka na mesec</span><strong class="${status.gap ? "negative" : "positive"}">${money(status.gap)}</strong><small>zadnji ${status.months} zaključeni meseci</small></div>
+  </div>
+  <div class="progress" style="--value:${progress}%"><span></span></div>`;
+  if (!status.gap) return `${input}${summary}<div class="notice-good">Cilj dosegaš. Kar privarčuješ nad ciljem, lahko gre v rezervo ali investicije.</div>`;
+  const plan = status.plan.length
+    ? `<div class="recommendation-list">${status.plan.map((item) => `<div class="recommendation"><div><strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.hint)}</span></div><b class="positive">${money(item.amount)}<small>skupaj ${money(item.covered)}</small></b></div>`).join("")}</div>
+      <p class="analysis-note">${status.covered >= status.gap - 0.009 ? "Te spremembe bi zaprle razliko." : `Te spremembe zaprejo ${money(status.covered)} od ${money(status.gap)}; preostanek zahteva večje spremembe (npr. stalni stroški ali višji prihodki).`} Ocene so groba orientacija, ker so podatki še kratki.</p>`
+    : `<p class="analysis-note">V prostovoljnih kategorijah ni očitnih prihrankov; razlika je v stalnih stroških ali prihodkih.</p>`;
+  return `${input}${summary}${plan}`;
+}
+
 function recentTransactions(limit = 10) {
   return [...(state.transactions || [])].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, limit);
 }
@@ -4537,6 +5113,13 @@ function closeMonth(values) {
   const month = Number(modal?.item?.month || filters.month);
   const year = Number(modal?.item?.year || filters.year);
   if (monthClosure(month, year) || isFutureMonth(month, year)) return closeModal();
+  const differences = isOwnerProfile() ? monthEndBalanceDifferences(month, year, values) : [];
+  if (differences.some((item) => Math.abs(item.difference) >= MONTH_END_WARNING)) {
+    const lines = differences.map((item) => `${item.account.name}: v aplikaciji ${money(item.app)}, dejansko ${money(item.actual)} (razlika ${signed(item.difference)})`);
+    if (!confirm(`Stanje se ne ujema z aplikacijo:\n${lines.join("\n")}\n\nNekaj verjetno manjka ali je zapisano dvakrat (preveri "Zdravje podatkov"). Zapišem uskladitev na ${differences[0].date} in zaključim mesec?`)) return;
+  }
+  if (differences.length) createBackup(`pred uskladitvijo ob zaključku ${month}/${year}`, state);
+  const monthEndAdjustments = differences.length ? applyMonthEndAdjustments(differences, month, year) : [];
   const data = monthlyData(month, year);
   const analytics = analyticsMonthlyData(month, year, { ignoreClosure: true });
   const reconstructed = reconstructNetWorthAsOf(month, year);
@@ -4580,6 +5163,13 @@ function closeMonth(values) {
     },
     budgets: budgetRowsForMonth(month, year).map(({ category, available, spent, unused }) => ({ category, available, spent, unused })),
   }, ...(state.monthClosures || [])];
+  if (monthEndAdjustments.length) {
+    const closedKey = `${year}-${pad(month)}`;
+    refreshClosedMonthsAfterCorrection(
+      closedPeriodsForDates([lastDayOfMonth(month, year)]).filter((period) => period.key !== closedKey),
+      `Uskladitev ob zaključku ${monthLabel(month, year)}`
+    );
+  }
   const next = nextMonthPeriod(month, year);
   filters.month = next.month;
   filters.year = next.year;
@@ -4702,13 +5292,21 @@ function analyticsView() {
     <div class="card"><div class="card-header"><h3>Stroški po kategorijah</h3><span class="pill">podrobno</span></div><div class="card-body">${bars(analyticsExpenseEntries(focusMonth, focusYear, "category"))}</div></div>
     <div class="card"><div class="card-header"><h3>Struktura stroškov</h3><span class="pill">${latestCompleted ? monthLabel(focusMonth, focusYear) : "ni zaključenih mesecev"}</span></div><div class="card-body">${donutChart(structure)}</div></div>
   </section>
+  <section class="card savings-goal-card" style="margin-top:14px">
+    <div class="card-header"><div><h3>Cilj varčevanja</h3><p>Koliko rednih prihodkov privarčuješ in kaj bi zaprlo razliko do cilja.</p></div></div>
+    <div class="card-body">${savingsGoalHtml()}</div>
+  </section>
   <section class="analytics-deep" style="margin-top:14px">
     <div class="card"><div class="card-header"><h3>Napoved denarnega toka</h3><span class="pill">3 / 6 / 12 mesecev</span></div><div class="card-body">${forecastHtml()}</div></div>
     <div class="card"><div class="card-header"><h3>Priporočena razporeditev</h3><span class="pill">zaključeni meseci</span></div><div class="card-body">${allocationGuidanceHtml()}</div></div>
   </section>
   <section class="card" style="margin-top:14px">
-    <div class="card-header"><h3>Priložnosti za zmanjšanje porabe</h3><span class="pill">${completedMonths.length >= 3 ? "zadnji 3 zaključeni meseci" : "potrebni so 3 meseci"}</span></div>
+    <div class="card-header"><h3>Priložnosti za zmanjšanje porabe</h3><span class="pill">${completedMonths.length >= OWN_BASELINE_MIN_MONTHS ? "glede na tvojo običajno porabo" : completedMonths.length >= 3 ? "zadnji 3 zaključeni meseci" : "potrebni so 3 meseci"}</span></div>
     <div class="card-body">${spendingRecommendationsHtml()}</div>
+  </section>
+  <section class="card" style="margin-top:14px">
+    <div class="card-header"><div><h3>Kje gre denar</h3><p>Trgovci in lokali po mesečnem znesku. Majhni pogosti nakupi se med kategorijami hitro izgubijo.</p></div></div>
+    <div class="card-body">${merchantStatsHtml()}</div>
   </section>
   <section class="card" style="margin-top:14px">
     <div class="card-header"><div><h3>Zaznane naročnine</h3><p>Samodejno prepoznana mesečna plačila. Samo informativno.</p></div></div>
@@ -4971,13 +5569,9 @@ function accountAllocation() {
   };
 }
 
-function spendingRecommendationsHtml() {
-  const months = completedActivityMonths(6);
-  if (months.length < 3) return `<div class="empty">Priporočila bodo na voljo po treh zaključenih mesecih. Trenutno jih je ${months.length}.</div>`;
-  const sampleMonths = months.slice(-3);
-  const monthlyExpense = average(sampleMonths.map(([month, year]) => analyticsRecurringExpenseTotal(month, year)));
-  if (!monthlyExpense) return `<div class="empty">V izbranem obdobju ni stroškov.</div>`;
-  const thresholds = new Map([
+// Categories above a share of monthly spending: fixed orientation shares, overridden by your own targets.
+function shareSuggestions(sampleMonths, monthlyExpense, onlyTargets = false) {
+  const thresholds = new Map(onlyTargets ? [] : [
     ["restavracije/kava", 0.08],
     ["prosti čas", 0.08],
     ["naročnine", 0.04],
@@ -4990,27 +5584,50 @@ function spendingRecommendationsHtml() {
     if (target.category && share > 0) thresholds.set(target.category, share);
   }
   const categories = new Set(sampleMonths.flatMap(([month, year]) => analyticsRecurringExpenseEntries(month, year).map(([category]) => category)));
-  const categoryMonthly = [...categories].map((category) => {
-    const values = sampleMonths.map(([month, year]) => Number(analyticsRecurringExpenseEntries(month, year).find(([name]) => name === category)?.[1] || 0));
-    return [category, average(values), values.filter((value) => value > 0).length];
-  });
-  const suggestions = categoryMonthly
-    .map(([category, value, activeMonths]) => {
+  return [...categories]
+    .map((category) => {
+      const values = sampleMonths.map(([month, year]) => Number(analyticsRecurringExpenseEntries(month, year).find(([name]) => name === category)?.[1] || 0));
+      const value = average(values);
+      const activeMonths = values.filter((item) => item > 0).length;
       const targetShare = thresholds.get(category);
       if (!targetShare || activeMonths < 2 || value <= monthlyExpense * targetShare) return null;
-      const saving = value - monthlyExpense * targetShare;
-      return { category, value, saving, share: value / monthlyExpense * 100, activeMonths };
+      return { category, value, saving: value - monthlyExpense * targetShare, share: value / monthlyExpense * 100, activeMonths };
     })
     .filter(Boolean)
     .sort((a, b) => b.saving - a.saving);
+}
+
+function shareSuggestionRow(item) {
+  return `<div class="recommendation">
+    <div><strong>${escapeHtml(item.category)}</strong><span>${NUMBER.format(item.share)} % mesečne porabe · povprečno ${money(item.value)} · prisotno ${item.activeMonths}/3 mesecev</span></div>
+    <b>Možen prihranek ${money(item.saving)} / mesec</b>
+  </div>`;
+}
+
+function spendingRecommendationsHtml() {
+  const months = completedActivityMonths(6);
+  if (months.length < 3) return `<div class="empty">Priporočila bodo na voljo po treh zaključenih mesecih. Trenutno jih je ${months.length}.</div>`;
+  const sampleMonths = months.slice(-3);
+  const monthlyExpense = average(sampleMonths.map(([month, year]) => analyticsRecurringExpenseTotal(month, year)));
+  if (!monthlyExpense) return `<div class="empty">V izbranem obdobju ni stroškov.</div>`;
+  const own = ownBaselineSuggestions(months);
+  if (own) {
+    const targeted = shareSuggestions(sampleMonths, monthlyExpense, true).filter((item) => !own.some((row) => row.category === item.category));
+    if (!own.length && !targeted.length) {
+      return `<div class="recommendation-list"><div class="recommendation good"><strong>Poraba je na tvoji običajni ravni</strong><span>Nobena kategorija v zadnjih treh mesecih ni izrazito nad tvojo mediano.</span></div></div>`;
+    }
+    return `<div class="recommendation-list">${own.map((item) => `<div class="recommendation">
+      <div><strong>${escapeHtml(item.category)}</strong><span>zadnji 3 meseci povprečno ${money(item.value)} · običajno ${money(item.baseline)} na mesec</span></div>
+      <b>Možen prihranek ${money(item.saving)} / mesec</b>
+    </div>`).join("")}${targeted.map(shareSuggestionRow).join("")}</div>
+    <p class="analysis-note">Vsaka kategorija se primerja s tvojo običajno porabo: mediano zadnjih ${months.length} zaključenih mesecev. Označena je, ko je povprečje zadnjih treh mesecev vsaj 15 % in 15 € nad njo. Stanovanje, davki in zavarovanja so izločeni.${targeted.length ? " Kategorije z lastnim ciljnim deležem se preverijo tudi po deležu." : ""}</p>`;
+  }
+  const suggestions = shareSuggestions(sampleMonths, monthlyExpense);
   if (!suggestions.length) {
     return `<div class="recommendation-list"><div class="recommendation good"><strong>Poraba je uravnotežena</strong><span>V pregledanih kategorijah ni izrazitega preseganja orientacijskih deležev.</span></div></div>`;
   }
-  return `<div class="recommendation-list">${suggestions.map((item) => `<div class="recommendation">
-    <div><strong>${escapeHtml(item.category)}</strong><span>${NUMBER.format(item.share)} % mesečne porabe · povprečno ${money(item.value)} · prisotno ${item.activeMonths}/3 mesecev</span></div>
-    <b>Možen prihranek ${money(item.saving)} / mesec</b>
-  </div>`).join("")}</div>
-  <p class="analysis-note">Metoda primerja povprečje največ zadnjih treh zaključenih mesecev s tvojimi ciljnimi deleži. Kjer lastnega cilja ni, se uporabijo orientacijski privzeti pragovi. Možen prihranek je znesek nad izbranim pragom.</p>`;
+  return `<div class="recommendation-list">${suggestions.map(shareSuggestionRow).join("")}</div>
+  <p class="analysis-note">Metoda primerja povprečje največ zadnjih treh zaključenih mesecev s tvojimi ciljnimi deleži. Kjer lastnega cilja ni, se uporabijo orientacijski privzeti pragovi. Od ${OWN_BASELINE_MIN_MONTHS}. zaključenega meseca naprej se kategorije primerjajo s tvojo običajno porabo.</p>`;
 }
 
 function importsView() {
@@ -5828,7 +6445,7 @@ function matchImportReimbursements() {
     .map((tx) => ({ id: `draft:${tx.index}`, date: tx.date, name: tx.description, amount: Math.abs(tx.amount), category: tx.category }));
   for (const tx of importDraft.transactions) {
     if (tx.manualChanged || tx.amount <= 0 || tx.category !== REIMBURSEMENT_CATEGORY || tx.status !== "za pregled") continue;
-    const best = reimbursementCandidates({ date: tx.date, amount: tx.amount, category: REIMBURSEMENT_CATEGORY }, 1, draftExpenses)[0];
+    const best = reimbursementCandidates({ date: tx.date, amount: tx.amount, name: tx.description, category: REIMBURSEMENT_CATEGORY }, 1, draftExpenses)[0];
     const label = best ? `${best.expense.name || "strošek"} (${best.expense.date})` : "";
     tx.ruleSource = best && best.score >= REIMBURSEMENT_AUTO_CONFIRM_SCORE
       ? `vračilo za: ${label}`
@@ -5876,7 +6493,7 @@ function isRevolutAccountReference(reference) {
 
 // Closing balance per Revolut account. Revolut lists each account's rows in completion order, so the
 // last row in the file carries the closing Balance (row dates are start dates and can be out of order).
-function statementBalances() {
+function statementBalances({ includeOtherAccounts = false } = {}) {
   if (!importDraft?.mapping?.balance) return [];
   const transactions = importDraft.transactions || [];
   const byAccount = new Map();
@@ -5884,7 +6501,7 @@ function statementBalances() {
     const rawBalance = String(readMapped(row, "balance") || "").trim();
     const tx = transactions[index];
     if (!rawBalance || !tx?.date || tx.status === "preklicano" || tx.status === "nepopolno") return;
-    if (normalizeText(tx.currency || "EUR") !== "eur" || !isRevolutAccountReference(tx.account)) return;
+    if (normalizeText(tx.currency || "EUR") !== "eur" || (!includeOtherAccounts && !isRevolutAccountReference(tx.account))) return;
     if (!byAccount.has(tx.account)) byAccount.set(tx.account, []);
     byAccount.get(tx.account).push({ index, date: tx.date, balance: parseAmount(rawBalance) });
   });
@@ -6529,6 +7146,7 @@ function confirmImportDraft() {
   const reconciliation = importDraft.reconcile === false
     ? { adjustments: [], report: [] }
     : reconcileWithStatement(statementBalances(), sourceLabel, importId);
+  const bankMessages = bankStatementMessages();
   state.transactions = [...reconciliation.adjustments, ...state.transactions];
   state.importHistory = [{
     id: importId,
@@ -6559,6 +7177,7 @@ function confirmImportDraft() {
       ? `${item.account}: stanje se ujema z izpiskom (${money(item.statement)} na ${item.date}).${pendingNote}`
       : `${item.account}: stanje usklajeno z izpiskom (${money(item.statement)} na ${item.date}), popravek ${signed(item.difference)}.${pendingNote}`);
   });
+  messages.push(...bankMessages);
   if (unmatchedAccountCount > 0) {
     messages.push(`Opozorilo: ${unmatchedAccountCount} uvoženih vnosov ni bilo mogoče pripisati nobenemu računu (izbrani račun ne obstaja). Stanja teh računov se niso spremenila - preveri jih v seznamu transakcij.`);
   }
@@ -7165,6 +7784,7 @@ function modalHtml() {
   if (modal.collection === "closeMonth") return closeMonthModalHtml();
   if (modal.collection === "quickEntry") return quickEntryModalHtml();
   if (modal.collection === "linkReimbursement") return reimbursementDialogHtml();
+  if (modal.collection === "sharedExpense") return sharedExpenseModalHtml();
   const current = modal.item || defaults(modal.collection);
   return `<div class="modal-backdrop">
     <form class="modal" data-form="${modal.collection}">
@@ -7221,6 +7841,7 @@ function closeMonthModalHtml() {
     <div class="modal-head"><h3>Zaključi ${monthLabel(month, year)}</h3><button type="button" class="icon-btn" data-action="close">X</button></div>
     <div class="modal-body form-grid">
       <p class="settings-note full">Shranjeni bodo net worth snapshot, analitične številke, stanje budgetov in komentar. Zaključene analitike se pozneje ne preračunavajo.</p>
+      ${monthEndCheckHtml(month, year)}
       <label class="full">Kaj je šlo dobro<textarea name="good">${escapeHtml(note.good || "")}</textarea></label>
       <label class="full">Kaj je šlo slabo<textarea name="bad">${escapeHtml(note.bad || "")}</textarea></label>
       <label class="full">Kaj popraviti naslednji mesec<textarea name="next">${escapeHtml(note.next || "")}</textarea></label>
@@ -7914,6 +8535,36 @@ function bind() {
     });
   });
   document.querySelectorAll("[data-reimbursement-dismiss]").forEach((btn) => btn.addEventListener("click", () => dismissPossibleReimbursement(btn.dataset.reimbursementDismiss)));
+  document.querySelectorAll("[data-health-ok]").forEach((btn) => btn.addEventListener("click", () => markHealthReviewed(btn.dataset.healthOk)));
+  document.querySelectorAll("[data-open-month]").forEach((btn) => btn.addEventListener("click", () => {
+    const [year, month] = btn.dataset.openMonth.split("-").map(Number);
+    filters.year = year;
+    filters.month = month;
+    setActive("monthly");
+  }));
+  document.querySelectorAll("[data-shared-expense]").forEach((btn) => btn.addEventListener("click", () => openSharedExpenseModal(btn.dataset.sharedExpense)));
+  document.querySelectorAll("[data-shared-settle]").forEach((btn) => btn.addEventListener("click", () => settleSharedExpense(btn.dataset.sharedSettle)));
+  document.querySelectorAll("[data-shared-expense-form]").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      saveSharedExpense(Object.fromEntries(new FormData(form).entries()));
+    });
+    form.querySelector("[data-action='shared-clear']")?.addEventListener("click", clearSharedExpense);
+    const people = form.querySelector("input[name='people']");
+    const expected = form.querySelector("input[name='expected']");
+    people?.addEventListener("input", () => {
+      const count = Math.round(Number(people.value || 0));
+      const amount = Number(form.dataset.amount || 0);
+      if (count > 1 && expected) expected.value = (Math.round(amount * (count - 1) / count * 100) / 100).toFixed(2);
+    });
+  });
+  document.querySelectorAll("[data-savings-goal]").forEach((input) => input.addEventListener("change", () => {
+    const value = Math.round(Number(input.value || 0));
+    if (!(value > 0 && value < 100)) return;
+    state.settings.savingsGoalPercent = value;
+    save();
+    render();
+  }));
   document.querySelectorAll("[data-import-filter]").forEach((btn) => btn.addEventListener("click", () => {
     importFilter = btn.dataset.importFilter;
     render();

@@ -3372,3 +3372,145 @@ button:disabled {
     max-height: calc(100dvh - 16px);
   }
 }
+
+/* Data health (owner profile) */
+.health-notice {
+  margin-bottom: 14px;
+  border-color: rgba(255, 200, 87, 0.35);
+}
+
+.health-notice .card-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.health-group + .health-group {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.health-group-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.health-group-head small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.health-group > .unusual-list > small {
+  font-size: 12px;
+}
+
+.month-end-check {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.month-end-check .settings-note {
+  margin: 4px 0 8px;
+}
+
+.month-end-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.month-end-grid small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Who still owes you */
+.owed-people {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.owed-people span {
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 13px;
+}
+
+.owed-people small {
+  margin-left: 4px;
+  color: var(--muted);
+}
+
+.payer-hint {
+  margin: 6px 0 0;
+}
+
+/* Merchants and savings goal */
+.recommendation.merchant-row {
+  border-color: var(--line);
+  border-left-color: var(--accent, var(--line));
+  background: transparent;
+}
+
+.recommendation.merchant-row b {
+  color: var(--text);
+  text-align: right;
+}
+
+.recommendation b small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.recommendation.merchant-row .pill {
+  margin-left: 6px;
+  font-size: 11px;
+}
+
+.goal-input {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: var(--muted);
+}
+
+.goal-input input {
+  width: 76px;
+}
+
+.savings-goal-card .progress {
+  margin: 12px 0;
+}
+
+@media (max-width: 720px) {
+  .health-group-head,
+  .health-notice .card-body {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .recommendation.merchant-row {
+    align-items: flex-start;
+  }
+}
+
+.savings-goal-card .forecast-grid {
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
