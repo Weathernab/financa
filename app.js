@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "109";
+const APP_VERSION = "110";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -2343,11 +2343,13 @@ function reimbursementReportingDates(income) {
 }
 
 function closedPeriodsForDates(dates) {
-  const periods = new Map();
-  dates.map(periodFromDate).filter(Boolean).forEach((period) => {
-    if (monthClosure(period.month, period.year)) periods.set(period.key, period);
-  });
-  return [...periods.values()];
+  const keys = (dates || []).map(periodFromDate).filter(Boolean).map((period) => period.key).sort();
+  if (!keys.length) return [];
+  return (state.monthClosures || [])
+    .map((closure) => periodFromDate(`${closure.year}-${pad(Number(closure.month))}-01`))
+    .filter((period) => period && period.key >= keys[0])
+    .sort((a, b) => a.key.localeCompare(b.key))
+    .filter((period, index, list) => index === 0 || list[index - 1].key !== period.key);
 }
 
 // Expenses a reimbursement most likely belongs to, best first. A friend usually pays back an equal
@@ -2717,7 +2719,12 @@ function upsert(collection, values) {
     }
   }
   if (collection === "transfers") {
+    const originalTransfer = clean.id ? (state.transactions || []).find((item) => item.id === clean.id) : null;
     if (!upsertTransfer(clean)) return;
+    refreshClosedMonthsAfterCorrection(
+      affectedClosedPeriods(originalTransfer?.date, clean.date),
+      `Popravek prenosa "${clean.description || "prenos"}"`
+    );
     save();
     closeModal();
     return;
@@ -3025,7 +3032,7 @@ function relinkOrphanedAccountReferences() {
   state.transactions = (state.transactions || []).map((tx) => {
     if (!tx.transferManaged) return tx;
     let row = tx;
-    const [fromName, toName] = String(tx.account || "").split("→").map((part) => part.trim());
+    const [fromName, toName] = String(tx.account || "").split(/→|->/).map((part) => part.trim());
     if (row.fromAccountId && !validIds.has(row.fromAccountId)) {
       const account = findExpenseAccount(fromName);
       if (account) {
@@ -3059,7 +3066,7 @@ function repairMissingIncomeBalances() {
   let fixed = 0;
   let totalAmount = 0;
   let unmatched = 0;
-  const touchedPeriods = new Map();
+  const touchedDates = [];
   // Links only: live balances are typically set manually (Setup) after these incomes and already include them.
   for (const income of affected) {
     const account = findExpenseAccount(income.account || income.source);
@@ -3071,10 +3078,9 @@ function repairMissingIncomeBalances() {
     replaceRecordById("incomes", income.id, updated);
     fixed += 1;
     totalAmount += Number(updated.balanceImpact || 0);
-    const period = periodFromDate(updated.date);
-    if (period && monthClosure(period.month, period.year)) touchedPeriods.set(period.key, period);
+    touchedDates.push(updated.date);
   }
-  const periods = [...touchedPeriods.values()];
+  const periods = closedPeriodsForDates(touchedDates);
   if (periods.length) {
     periods.forEach((period) => rebuildMonthClosure(period.month, period.year, "Popravilo manjkajočih stanj prihodkov"));
   }
@@ -3452,6 +3458,8 @@ function removeLinkedLedger(tx) {
 
 function removeItem(collection, id) {
   if (!confirm("Izbrišem ta vnos?")) return;
+  const removed = (state[collection] || []).find((item) => item.id === id);
+  const removedDates = removed ? [removed.date, ...(collection === "incomes" ? reimbursementReportingDates(removed) : [])] : [];
   if (collection === "transactions") {
     const tx = (state.transactions || []).find((item) => item.id === id);
     if (tx?.transferManaged) restoreTransferBalance(tx);
@@ -3464,6 +3472,9 @@ function removeItem(collection, id) {
     deleteIncomeRecord(id, true);
   } else {
     removeRecordById(collection, id);
+  }
+  if (["transactions", "expenses", "incomes"].includes(collection)) {
+    refreshClosedMonthsAfterCorrection(closedPeriodsForDates(removedDates), `Izbris vnosa "${removed?.name || removed?.description || "vnos"}"`);
   }
   save();
   render();
@@ -3881,6 +3892,7 @@ function createRecurringTransaction(ruleId) {
   } else {
     upsertExpense({ date, name: rule.name, amount: rule.amount, category: rule.category, subcategory: "", account: rule.account, kind: rule.category === "naročnine" || rule.category === "zavarovanja" ? "fiksen" : "variabilen", note: rule.note || "Ponavljajoči vnos" }, true);
   }
+  refreshClosedMonthsAfterCorrection(closedPeriodsForDates([date]), `Ponavljajoči vnos "${rule.name}"`);
   save();
   render();
 }
@@ -4582,11 +4594,7 @@ function periodFromDate(value) {
 }
 
 function affectedClosedPeriods(previousDate, nextDate) {
-  const periods = new Map();
-  [periodFromDate(previousDate), periodFromDate(nextDate)].filter(Boolean).forEach((period) => {
-    if (monthClosure(period.month, period.year)) periods.set(period.key, period);
-  });
-  return [...periods.values()];
+  return closedPeriodsForDates([previousDate, nextDate]);
 }
 
 function liveBudgetRowsForMonth(month, year) {
@@ -5780,6 +5788,12 @@ function rebuildImportDraft() {
       tx.subcategory = "ujemajoč prenos";
       tx.confidence = "high";
       tx.ruleSource = "ujemanje z nasprotno transakcijo";
+    } else if (isCashWithdrawalTransfer(tx) && !accountByCanonicalKey("gotovina") && !(tx.manualChanged && tx.category === "interni transfer")) {
+      tx.category = "gotovina";
+      tx.categoryGroup = categoryGroupFor("gotovina");
+      tx.subcategory = "dvig gotovine";
+      tx.confidence = "high";
+      tx.ruleSource = "dvig gotovine (ni računa Gotovina, zato strošek)";
     } else if (isInternalTransfer(tx)) {
       tx.status = "interni transfer";
       tx.category = "interni transfer";
@@ -6187,14 +6201,17 @@ function importedRevolutTransfer(tx, sourceLabel, importId) {
   const currentAccount = findExpenseAccount(tx.account);
   const bankAccount = accountByCanonicalKey("banka");
   const revolutAccount = accountByCanonicalKey("revolut");
-  const currentKey = currentAccount ? canonicalAssetKey(currentAccount) : "";
-  const fromAccount = Number(tx.amount || 0) > 0
-    ? bankAccount
-    : currentKey && currentKey !== "revolut" ? currentAccount : bankAccount;
-  const toAccount = Number(tx.amount || 0) > 0 && currentKey === "revolut"
-    ? currentAccount
-    : revolutAccount;
-  return importedManagedTransfer(tx, sourceLabel, importId, fromAccount, toAccount, "banka -> Revolut", "Samodejno prepoznan prenos z bancnega racuna na Revolut.");
+  const onRevolut = currentAccount ? canonicalAssetKey(currentAccount) === "revolut" : true;
+  const revolutSide = onRevolut ? currentAccount || revolutAccount : revolutAccount;
+  const otherSide = onRevolut ? bankAccount : currentAccount;
+  const incoming = Number(tx.amount || 0) > 0;
+  // Money in on Revolut came from the bank; money out of Revolut went to the bank (and the other way round on a bank statement).
+  const fromAccount = onRevolut === incoming ? otherSide : revolutSide;
+  const toAccount = onRevolut === incoming ? revolutSide : otherSide;
+  const toRevolut = toAccount?.id === revolutSide?.id;
+  return importedManagedTransfer(tx, sourceLabel, importId, fromAccount, toAccount,
+    toRevolut ? "banka -> Revolut" : "Revolut -> banka",
+    toRevolut ? "Samodejno prepoznan prenos z bancnega racuna na Revolut." : "Samodejno prepoznan prenos z Revoluta na bancni racun.");
 }
 
 function isCashWithdrawalTransfer(tx) {
@@ -6239,12 +6256,14 @@ function accountMatchesReference(account, reference) {
     || normalized.includes(normalizeText(account.name));
 }
 
+// Money in must land on the transfer's target account, money out must leave its source account:
+// a Revolut card payment of 88 is not the bank -> Revolut top-up of 88 on the same day.
 function transferAccountDirectionMatches(tx, transfer) {
   const fromAccount = (state.accounts || []).find((account) => account.id === transfer.fromAccountId);
   const toAccount = (state.accounts || []).find((account) => account.id === transfer.toAccountId);
-  if (Number(tx.amount || 0) > 0) return accountMatchesReference(toAccount, tx.account) || accountLooksLikeRevolut(toAccount) || accountLooksLikeRevolut(tx.account);
-  if (Number(tx.amount || 0) < 0) return accountMatchesReference(fromAccount, tx.account) || accountLooksLikeRevolut(fromAccount) || accountLooksLikeRevolut(tx.account);
-  return false;
+  const side = Number(tx.amount || 0) > 0 ? toAccount : Number(tx.amount || 0) < 0 ? fromAccount : null;
+  if (!side) return false;
+  return accountMatchesReference(side, tx.account) || (accountLooksLikeRevolut(side) && accountLooksLikeRevolut(tx.account));
 }
 
 function hasMatchingManualTransfer(tx) {
@@ -6526,10 +6545,7 @@ function confirmImportDraft() {
     reconciliation: reconciliation.report,
   }, ...(state.importHistory || [])];
   refreshClosedMonthsAfterCorrection(
-    [...new Map([...incomeRows, ...expenseRows, ...transactionRows, ...reconciliation.adjustments, ...reimbursementDates.map((date) => ({ date }))]
-      .map((row) => periodFromDate(row.date))
-      .filter((period) => period && monthClosure(period.month, period.year))
-      .map((period) => [period.key, period])).values()],
+    closedPeriodsForDates([...incomeRows, ...expenseRows, ...transactionRows, ...reconciliation.adjustments].map((row) => row.date).concat(reimbursementDates)),
     `Uvoz ${importDraft.fileName}`
   );
   importDraft = null;
@@ -6604,6 +6620,9 @@ function undoLastImport() {
   const incomeIds = new Set(last.incomeIds || []);
   const expenseIds = new Set(last.expenseIds || []);
   const transactionIds = new Set(last.transactionIds || []);
+  const undoneDates = [...(state.transactions || []), ...(state.incomes || []), ...(state.expenses || [])]
+    .filter((item) => transactionIds.has(item.id) || incomeIds.has(item.id) || expenseIds.has(item.id))
+    .map((item) => item.date);
   (state.transactions || [])
     .filter((item) => transactionIds.has(item.id) && item.transferManaged)
     .forEach((item) => restoreTransferBalance(item));
@@ -6622,6 +6641,7 @@ function undoLastImport() {
   const createdAccountIds = new Set(last.createdAccountIds || []);
   state.accounts = (state.accounts || []).filter((account) => !createdAccountIds.has(account.id));
   state.importHistory = rest;
+  refreshClosedMonthsAfterCorrection(closedPeriodsForDates(undoneDates), `Razveljavljen uvoz ${last.fileName}`);
   save();
   render();
 }
