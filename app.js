@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "116";
+const APP_VERSION = "117";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -5149,7 +5149,8 @@ function simpleReviewCard() {
 // Month switching everywhere: arrows, plus a way back to the current month.
 function simpleMonthNav() {
   const isCurrent = Number(filters.month) === currentMonth && Number(filters.year) === currentYear;
-  const back = isCurrent ? "" : `<button type="button" class="month-nav-today" data-month-today>Ta mesec</button>`;
+  const target = Number(filters.year) === currentYear ? new Date(currentYear, currentMonth - 1, 1).toLocaleDateString("sl-SI", { month: "long" }) : monthLabel(currentMonth, currentYear);
+  const back = isCurrent ? "" : `<button type="button" class="month-nav-today" data-month-today>↩ Nazaj na ${escapeHtml(target)}</button>`;
   return `<div class="simple-month-nav"><button type="button" class="icon-btn" data-simple-month="-1" aria-label="Prejšnji mesec">‹</button><strong>${escapeHtml(capitalize(monthLabel(filters.month, filters.year)))}</strong><button type="button" class="icon-btn" data-simple-month="1" aria-label="Naslednji mesec" ${isFutureMonth(nextMonthPeriod(Number(filters.month), Number(filters.year)).month, nextMonthPeriod(Number(filters.month), Number(filters.year)).year) ? "disabled" : ""}>›</button>${back}</div>`;
 }
 

@@ -3709,14 +3709,25 @@ button:disabled {
   grid-template-columns: repeat(2, minmax(140px, 1fr));
 }
 
+.simple-month-nav {
+  flex-wrap: wrap;
+}
+
 @media (max-width: 720px) {
   .filter-bar .simple-month-nav {
     justify-content: center;
-    gap: 10px;
+    gap: 8px 10px;
   }
 
   .filter-bar .simple-month-nav strong {
     min-width: 0;
+  }
+
+  /* On a phone the way back sits on its own line under the month. */
+  .month-nav-today {
+    flex-basis: 100%;
+    border: 0;
+    min-height: 26px;
   }
 }
 
