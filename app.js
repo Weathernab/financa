@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "118";
+const APP_VERSION = "119";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -7981,19 +7981,25 @@ function backupHistoryView() {
   </div></div>`;
 }
 
+// Users only check, send and fetch; the connection itself (address, key, disconnect) is the admin's.
 function settingsSyncView() {
   const sheets = googleSheetsConfig();
   const serverManagedAuth = hasServerManagedCloudAuth();
+  const canEditConnection = currentProfile?.role === "admin";
   return `<div class="card cloud-settings">
     <div class="card-header"><div><h3>Google Sheets</h3><p>Sinhronizacija med napravami.</p></div><span class="sync-badge ${cloudStatus.state}">${cloudStatus.state === "success" ? "Povezano" : cloudStatus.state === "pending" ? "Povezujem" : "Preveri povezavo"}</span></div>
     <div class="card-body">
       <div class="sync-status ${cloudStatus.state}"><span class="sync-dot"></span><div><strong>${escapeHtml(cloudStatus.message)}</strong></div></div>
       <form class="form-grid" data-google-sheets-form>
-        <label class="full">URL spletne aplikacije<input type="url" name="endpoint" value="${escapeAttr(sheets.endpoint)}" placeholder="https://script.google.com/macros/s/.../exec"></label>
-        <label class="full">Sinhronizacijski ključ<input type="password" name="syncKey" value="${escapeAttr(sheets.syncKey)}" autocomplete="off" placeholder="${serverManagedAuth ? "Nastavljen v okolju" : "Enak ključ kot v Apps Script kodi"}" ${serverManagedAuth ? "" : "required"}></label>
-        <div class="full cloud-actions"><button class="button" type="submit">Preveri povezavo</button>${sheets.enabled ? `<button class="button secondary" type="button" data-action="cloud-pull">Prenesi</button><button class="button secondary" type="button" data-action="cloud-push">Pošlji</button><button class="button danger ghost" type="button" data-action="cloud-disconnect">Odklopi</button>` : ""}</div>
+        ${canEditConnection ? `<label class="full">URL spletne aplikacije<input type="url" name="endpoint" value="${escapeAttr(sheets.endpoint)}" placeholder="https://script.google.com/macros/s/.../exec"></label>
+        <label class="full">Sinhronizacijski ključ<input type="password" name="syncKey" value="${escapeAttr(sheets.syncKey)}" autocomplete="off" placeholder="${serverManagedAuth ? "Nastavljen v okolju" : "Enak ključ kot v Apps Script kodi"}" ${serverManagedAuth ? "" : "required"}></label>` : ""}
+        <div class="full cloud-actions"><button class="button" type="submit">Preveri povezavo</button>${sheets.enabled ? `<button class="button secondary" type="button" data-action="cloud-pull">Prenesi</button><button class="button secondary" type="button" data-action="cloud-push">Pošlji</button>${canEditConnection ? `<button class="button danger ghost" type="button" data-action="cloud-disconnect">Odklopi</button>` : ""}` : ""}</div>
       </form>
-      <p class="settings-note">Ta povezava velja samo za profil ${escapeHtml(currentProfile.name)}. Samodejna sinhronizacija deluje po vsaki spremembi; profili se med seboj ne prepisujejo.</p>
+      <p class="settings-note">${canEditConnection
+        ? `Ta povezava velja samo za profil ${escapeHtml(currentProfile.name)}. Samodejna sinhronizacija deluje po vsaki spremembi; profili se med seboj ne prepisujejo.`
+        : sheets.enabled
+          ? "Spremembe se same pošljejo po vsakem vnosu. Prenesi prinese podatke iz drugih naprav, Pošlji pa pošlje podatke s te naprave."
+          : "Sinhronizacija na tej napravi še ni nastavljena. Nastavi jo skrbnik."}</p>
     </div>
   </div>`;
 }
@@ -8918,7 +8924,11 @@ function bind() {
   }));
   document.querySelectorAll("[data-google-sheets-form]").forEach((form) => form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const values = Object.fromEntries(new FormData(form).entries());
+    // Without the address fields (user profiles) the check runs with the saved connection.
+    const saved = googleSheetsConfig();
+    const values = form.querySelector("[name='endpoint']")
+      ? Object.fromEntries(new FormData(form).entries())
+      : { endpoint: saved.endpoint, syncKey: saved.syncKey };
     cloudReady = false;
     saveGoogleSheetsConfigForCurrentProfile(values);
     cloudAutoSyncPaused = false;
