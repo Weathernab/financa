@@ -3514,3 +3514,360 @@ button:disabled {
 .savings-goal-card .forecast-grid {
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
 }
+
+/* Simple mode */
+.simple-mode .card + .card,
+.simple-mode .card + section,
+.simple-mode section + .card,
+.simple-mode .simple-month-nav + .card,
+.simple-mode .simple-month-nav + section {
+  margin-top: 14px;
+}
+
+.simple-hero .card-body {
+  display: grid;
+  gap: 10px;
+}
+
+.simple-big {
+  font-size: 42px;
+  font-weight: 900;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+}
+
+.simple-hero p {
+  margin: 0;
+}
+
+.simple-hero .progress.over span {
+  background: var(--negative);
+}
+
+.simple-mode .button svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+
+.simple-mode .card-header .button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.simple-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  white-space: nowrap;
+  justify-self: start;
+  min-height: 48px;
+  padding: 0 22px;
+  font-size: 16px;
+}
+
+.simple-top {
+  display: grid;
+  gap: 10px;
+}
+
+.simple-top > div {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.simple-top i,
+.simple-row > i {
+  font-style: normal;
+  font-size: 22px;
+  text-align: center;
+}
+
+.simple-top span small,
+.simple-top b small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.simple-top b {
+  text-align: right;
+}
+
+.simple-list {
+  display: grid;
+}
+
+.simple-day {
+  padding: 14px 2px 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.simple-day:first-child {
+  padding-top: 0;
+}
+
+.simple-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--line);
+}
+
+.simple-row strong {
+  overflow-wrap: anywhere;
+}
+
+.simple-row small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.simple-row b {
+  white-space: nowrap;
+}
+
+.simple-month-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.simple-month-nav strong {
+  min-width: 150px;
+  text-align: center;
+  font-size: 17px;
+}
+
+.simple-month-nav .icon-btn {
+  font-size: 22px;
+}
+
+.simple-month-nav .icon-btn:disabled {
+  opacity: 0.35;
+}
+
+.simple-totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  color: var(--muted);
+}
+
+.simple-footnote {
+  margin: 14px 0 0;
+  text-align: center;
+}
+
+.simple-footnote .link-button {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.grid.metrics.simple-metrics {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.simple-metrics .metric strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 22px;
+}
+
+.simple-question + .simple-question {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.simple-question-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.simple-question small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+}
+
+.simple-answers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.simple-answer,
+.simple-answer-more {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.simple-answer.suggested {
+  border-color: var(--accent);
+}
+
+.simple-answer-more {
+  width: auto;
+}
+
+/* Three-tap entry */
+.simple-kind {
+  display: inline-flex;
+  justify-self: start;
+  width: max-content;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  gap: 4px;
+}
+
+.simple-kind button {
+  min-height: 38px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.simple-kind button.active {
+  background: var(--accent);
+  color: #06231d;
+}
+
+.simple-entry-modal .modal-body {
+  display: grid;
+  gap: 14px;
+}
+
+.simple-amount {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.simple-amount span {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.simple-amount input {
+  font-size: 32px;
+  font-weight: 900;
+  min-height: 60px;
+}
+
+.simple-amount b {
+  font-size: 26px;
+  color: var(--muted);
+}
+
+.simple-chips {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.simple-chip {
+  min-width: 0;
+}
+
+.simple-chip input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.simple-chip span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-2);
+  font-weight: 700;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.simple-chip i {
+  font-style: normal;
+  font-size: 20px;
+}
+
+.simple-chip input:checked + span {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.simple-chip input:focus-visible + span {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.simple-more summary {
+  color: var(--muted);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.simple-more[open] summary {
+  margin-bottom: 10px;
+}
+
+@media (max-width: 720px) {
+  .simple-big {
+    font-size: 36px;
+  }
+
+  .simple-add {
+    justify-self: stretch;
+  }
+
+  .simple-chips {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .simple-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .simple-metrics .metric strong {
+    font-size: 16px;
+  }
+}

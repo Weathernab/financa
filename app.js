@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "111";
+const APP_VERSION = "112";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -299,6 +299,7 @@ const navItems = [
   ["goals", "Cilji", "Napredek finančnih ciljev"],
   ["monthly", "Mesečni pregled", "Kaj se je zgodilo ta mesec"],
   ["analytics", "Analitika", "Preprosti trendi in razdelitve"],
+  ["overview", "Pregled", "Kam gre denar"],
   ["reviews", "Pregledi", "Cilji, mesečni pregled in analitika"],
   ["imports", "Uvoz podatkov", "Uvoz bančnih in Revolut transakcij"],
   ["setup", "Setup", "Vodeni popis premoženja in dolgov"],
@@ -325,6 +326,7 @@ const navIcons = {
   monthly: icon("calendarCheck"),
   analytics: icon("bars"),
   reviews: icon("bars"),
+  overview: icon("chart"),
   imports: icon("upload"),
   setup: icon("sliders"),
   settings: icon("settings"),
@@ -2673,6 +2675,12 @@ function setActive(id) {
 }
 
 function activeNavParent(id = active) {
+  if (isSimpleMode()) {
+    if (["transactions", "incomes", "expenses", "imports"].includes(id)) return "transactions";
+    if (["settings", "setup"].includes(id)) return "settings";
+    if (["overview", "goals", "monthly", "analytics", "reviews"].includes(id)) return "overview";
+    return "dashboard";
+  }
   if (["transactions", "incomes", "expenses"].includes(id)) return "transactions";
   if (["wealth", "accounts", "investments", "networth"].includes(id)) return "wealth";
   if (["liabilities", "taxes"].includes(id)) return "liabilities";
@@ -3506,9 +3514,13 @@ function render() {
     active = state.settings.setupCompleted ? "dashboard" : "setup";
   }
   save({ touch: false });
-  const item = navItems.find(([id]) => id === active) || navItems[0];
+  const navItem = navItems.find(([id]) => id === active) || navItems[0];
+  const simple = isSimpleMode();
+  const titleKey = simple && !["imports", "setup", "settings"].includes(active) ? activeNavParent() : "";
+  const item = SIMPLE_TITLES[titleKey] ? [active, ...SIMPLE_TITLES[titleKey]] : navItem;
+  const groups = simple ? [{ title: "", items: ["dashboard", "transactions", "overview", "settings"] }] : navGroups;
   document.getElementById("app").innerHTML = `
-    <div class="app-shell">
+    <div class="app-shell${simple ? " simple-mode" : ""}">
       <aside class="sidebar">
         <div class="brand">
           <div class="brand-mark"><span></span><span></span><span></span><span></span></div>
@@ -3517,20 +3529,20 @@ function render() {
           </div>
         </div>
         <nav class="nav">
-          ${navGroups.map((group) => `<div class="nav-group"><span class="nav-label">${group.title}</span>${group.items.map((id) => {
+          ${groups.map((group) => `<div class="nav-group">${group.title ? `<span class="nav-label">${group.title}</span>` : ""}${group.items.map((id) => {
             const nav = navItems.find(([itemId]) => itemId === id);
             if (!nav) return "";
-            const [, label] = nav;
+            const label = simple && SIMPLE_TITLES[id] ? SIMPLE_TITLES[id][0] : nav[1];
             const navTarget = id === "wealth" ? "accounts" : id === "reviews" ? "goals" : id;
             return `<button class="${activeNavParent() === id ? "active" : ""}" data-nav="${navTarget}"><span class="nav-icon">${navIcons[id]}</span><span>${label}</span></button>`;
           }).join("")}</div>`).join("")}
         </nav>
-        <div class="sidebar-card">
+        ${simple ? "" : `<div class="sidebar-card">
           <span class="premium-mark">PRO</span>
           <strong>Pametnejši pregled</strong>
           <p>${reviewTransactions().length} transakcij čaka pregled. Pravila uvoza se učijo iz tvojih popravkov.</p>
           <button class="button sidebar-cta" data-nav="transactions">Uredi zdaj</button>
-        </div>
+        </div>`}
         <div class="user-card">
           <div class="avatar">${profileInitials(currentProfile.name)}</div>
           <div><strong>${escapeHtml(currentProfile.name)}</strong><span>${currentProfile.role === "admin" ? "Skrbnik" : "Uporabnik"} · ${googleSheetsConfig().enabled ? "Sheets" : "lokalno"}</span></div>
@@ -3615,6 +3627,9 @@ function profileInitials(name) {
 }
 
 function addActionMenu() {
+  if (isSimpleMode()) {
+    return `<button class="button add-main" type="button" aria-label="Dodaj" data-add="quickEntry">${icon("plus")}<span>Dodaj</span></button>`;
+  }
   const actions = [
     ["quickEntry", "Hitri vnos", "plus"],
     ["incomes", "Prihodek", "arrowUp"],
@@ -3642,6 +3657,17 @@ function view() {
   const wealthTabs = [["wealth", "Računi"], ["investments", "Investicije"], ["networth", "Net worth"]];
   const liabilityTabs = [["liabilities", "Obveznosti"], ["taxes", "Davki"]];
   const reviewTabs = [["goals", "Cilji"], ["monthly", "Mesečni pregled"], ["analytics", "Analitika"]];
+  if (isSimpleMode()) {
+    const simpleViews = {
+      dashboard: simpleHomeView,
+      transactions: simpleEntriesView,
+      overview: simpleOverviewView,
+      settings: settingsView,
+      imports: importsView,
+      setup: setupView,
+    };
+    return (simpleViews[active] || simpleViews[activeNavParent()] || simpleHomeView)();
+  }
   const views = {
     dashboard: dashboardView,
     incomes: () => sectionTabs(transactionTabs) + collectionView("incomes", "Prihodki", null, filterHtml("incomes")),
@@ -4847,6 +4873,259 @@ function savingsGoalHtml() {
       <p class="analysis-note">${status.covered >= status.gap - 0.009 ? "Te spremembe bi zaprle razliko." : `Te spremembe zaprejo ${money(status.covered)} od ${money(status.gap)}; preostanek zahteva večje spremembe (npr. stalni stroški ali višji prihodki).`} Ocene so groba orientacija, ker so podatki še kratki.</p>`
     : `<p class="analysis-note">V prostovoljnih kategorijah ni očitnih prihrankov; razlika je v stalnih stroških ali prihodkih.</p>`;
   return `${input}${summary}${plan}`;
+}
+
+// ---- Simple mode: three screens (Domov, Vnosi, Pregled) and a three-tap entry ----
+// Per profile (state.settings.simpleMode). On by default for Liza's profile; data stays the same.
+
+function isSimpleMode() {
+  const value = state.settings?.simpleMode;
+  if (value === true || value === "true") return true;
+  if (value === false || value === "false") return false;
+  return isLizaProfile();
+}
+
+const SIMPLE_VIEWS = new Set(["dashboard", "transactions", "overview", "settings", "imports", "setup"]);
+const SIMPLE_TITLES = {
+  dashboard: ["Domov", "Kako ti gre ta mesec"],
+  transactions: ["Vnosi", "Vsi stroški in prihodki"],
+  overview: ["Pregled", "Kam gre denar"],
+};
+
+const CATEGORY_EMOJI = {
+  hrana: "🛒",
+  "restavracije/kava": "☕",
+  gorivo: "⛽",
+  avto: "🚗",
+  stanovanje: "🏠",
+  zavarovanja: "🛡️",
+  telefon: "📱",
+  šport: "🏃",
+  oblačila: "👕",
+  kozmetika: "💄",
+  študij: "🎓",
+  "prosti čas": "🎉",
+  naročnine: "📺",
+  potovanja: "✈️",
+  darila: "🎁",
+  zdravje: "💊",
+  "orodje/oprema": "🔧",
+  davki: "🧾",
+  gotovina: "💶",
+  "spletni nakupi": "📦",
+  "bančni stroški": "🏦",
+  drugo: "✨",
+  plača: "💼",
+  "študentsko delo": "🧑‍💻",
+  prihodki: "💰",
+  "povračilo stroškov": "↩️",
+  [REIMBURSEMENT_CATEGORY]: "🤝",
+};
+
+function categoryEmoji(category) {
+  return CATEGORY_EMOJI[category] || "•";
+}
+
+function capitalize(text) {
+  const value = String(text || "");
+  return value ? value[0].toLocaleUpperCase("sl-SI") + value.slice(1) : value;
+}
+
+// Most used categories first, so the usual ones are one tap away.
+function simpleEntryCategories(kind) {
+  const usage = new Map();
+  for (const item of kind === "prihodek" ? state.incomes || [] : state.expenses || []) {
+    usage.set(item.category, (usage.get(item.category) || 0) + 1);
+  }
+  const fallbackOrder = kind === "prihodek"
+    ? ["plača", "študentsko delo", "prihodki", REIMBURSEMENT_CATEGORY]
+    : ["hrana", "restavracije/kava", "prosti čas", "oblačila", "kozmetika", "gorivo", "darila", "drugo"];
+  return quickEntryCategories(kind)
+    .filter((category) => kind !== "prihodek" || category !== REIMBURSEMENT_CATEGORY || usage.has(category))
+    .map((category, index) => ({ category, score: (usage.get(category) || 0) * 100 + (fallbackOrder.includes(category) ? 50 - fallbackOrder.indexOf(category) : -index) }))
+    .sort((a, b) => b.score - a.score)
+    .map((item) => item.category);
+}
+
+function simpleDefaultAccount(kind) {
+  const remembered = kind === "prihodek" ? state.settings.lastIncomeAccount : state.settings.lastExpenseAccount;
+  const accounts = (state.accounts || []).filter(isSpendableAccount);
+  return accounts.find((account) => account.name === remembered)?.name
+    || accounts.find((account) => canonicalAssetKey(account) === "banka")?.name
+    || accounts.find((account) => canonicalAssetKey(account) === "revolut")?.name
+    || accounts[0]?.name
+    || "";
+}
+
+function simpleEntryModalHtml() {
+  const kind = modal.item?.kind === "prihodek" ? "prihodek" : "strošek";
+  const categories = simpleEntryCategories(kind);
+  const shown = categories.slice(0, 8);
+  const more = categories.slice(8);
+  const accounts = (state.accounts || []).filter(isSpendableAccount);
+  const account = simpleDefaultAccount(kind);
+  const chip = (category, checked) => `<label class="simple-chip"><input type="radio" name="category" value="${escapeAttr(category)}" ${checked ? "checked" : ""} required><span><i>${categoryEmoji(category)}</i>${escapeHtml(capitalize(category))}</span></label>`;
+  return `<div class="modal-backdrop"><form class="modal simple-entry-modal" data-simple-entry-form>
+    <div class="modal-head"><h3>${kind === "prihodek" ? "Nov prihodek" : "Nov strošek"}</h3><button type="button" class="icon-btn" data-action="close">X</button></div>
+    <div class="modal-body">
+      <div class="simple-kind" role="tablist">
+        <button type="button" class="${kind === "strošek" ? "active" : ""}" data-simple-kind="strošek">Strošek</button>
+        <button type="button" class="${kind === "prihodek" ? "active" : ""}" data-simple-kind="prihodek">Prihodek</button>
+      </div>
+      <input type="hidden" name="kind" value="${kind}">
+      <label class="simple-amount"><span>Znesek</span><input name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" placeholder="0,00" value="${escapeAttr(modal.item?.amount || "")}" autofocus required><b>€</b></label>
+      <div class="simple-chips">${shown.map((category) => chip(category, false)).join("")}</div>
+      ${more.length ? `<details class="simple-more"><summary>Več kategorij</summary><div class="simple-chips">${more.map((category) => chip(category, false)).join("")}</div></details>` : ""}
+      <details class="simple-more">
+        <summary>Opis, račun in datum</summary>
+        <div class="form-grid">
+          <label class="full">Opis (neobvezno)<input name="description" type="text" placeholder="npr. Mercator"></label>
+          <label>Račun<select name="account">${accounts.map((item) => option(item.name, account)).join("")}</select></label>
+          <label>Datum<input name="date" type="date" value="${escapeAttr(iso(currentYear, currentMonth, now.getDate()))}"></label>
+        </div>
+      </details>
+    </div>
+    <div class="modal-foot"><button type="button" class="button secondary" data-action="close">Prekliči</button><button class="button" type="submit">Shrani</button></div>
+  </form></div>`;
+}
+
+function saveSimpleEntry(values) {
+  const amount = Math.abs(Number(String(values.amount || "").replace(",", ".")) || 0);
+  if (!amount || !values.category) return;
+  const description = String(values.description || "").trim() || capitalize(values.category);
+  saveQuickEntry({ ...values, amount, description });
+}
+
+// Review rows as one question with a few answers.
+function simpleReviewCard() {
+  const rows = reviewTransactions().filter((tx) => tx.status === "za pregled").slice(0, 5);
+  const paybacks = possibleReimbursementIncomes().slice(0, 3);
+  const total = reviewTransactions().filter((tx) => tx.status === "za pregled").length + possibleReimbursementIncomes().length;
+  if (!total) return "";
+  const answers = (tx) => {
+    const kind = Number(tx.amount) < 0 ? "strošek" : "prihodek";
+    const options = simpleEntryCategories(kind).slice(0, 5);
+    if (tx.category && tx.category !== "za pregled" && !options.includes(tx.category)) options.unshift(tx.category);
+    return options.slice(0, 5).map((category) => `<button type="button" class="simple-answer${category === tx.category ? " suggested" : ""}" data-simple-review="${escapeAttr(tx.id)}" data-category="${escapeAttr(category)}">${categoryEmoji(category)} ${escapeHtml(capitalize(category))}</button>`).join("")
+      + `<select class="simple-answer-more" data-review-category="${escapeAttr(tx.id)}" aria-label="Druga kategorija"><option value="">Drugo …</option>${visibleCategories(kind === "prihodek" ? incomeCategories : expenseCategories).filter((category) => !["za pregled", "interni transfer"].includes(category)).map((category) => `<option value="${escapeAttr(category)}">${escapeHtml(category)}</option>`).join("")}</select>`;
+  };
+  return `<section class="card simple-card simple-todo"><div class="card-header"><h3>Za urediti</h3><span class="pill">${total}</span></div><div class="card-body">
+    ${rows.map((tx) => `<div class="simple-question">
+      <div class="simple-question-head"><strong>${escapeHtml(tx.description || "Transakcija")}</strong><b class="${Number(tx.amount) < 0 ? "negative" : "positive"}">${money(Number(tx.amount || 0))}</b></div>
+      <small>${escapeHtml(shortDate(tx.date))} · Kaj je to?</small>
+      <div class="simple-answers">${answers(tx)}</div>
+    </div>`).join("")}
+    ${paybacks.map((income) => `<div class="simple-question">
+      <div class="simple-question-head"><strong>${escapeHtml(income.name || "Nakazilo")}</strong><b class="positive">${money(Math.abs(Number(income.amount || 0)))}</b></div>
+      <small>${escapeHtml(shortDate(income.date))} · Ti je nekdo vrnil denar za skupni račun?</small>
+      <div class="simple-answers"><button type="button" class="simple-answer" data-link-reimbursement="${escapeAttr(income.id)}">🤝 Da, vračilo</button><button type="button" class="simple-answer" data-reimbursement-dismiss="${escapeAttr(income.id)}">💰 Ne, prihodek</button></div>
+    </div>`).join("")}
+    ${total > rows.length + paybacks.length ? `<small class="muted">Še ${total - rows.length - paybacks.length} – prikažejo se, ko urediš te.</small>` : ""}
+  </div></section>`;
+}
+
+function simpleMonthNav() {
+  return `<div class="simple-month-nav"><button type="button" class="icon-btn" data-simple-month="-1" aria-label="Prejšnji mesec">‹</button><strong>${escapeHtml(capitalize(monthLabel(filters.month, filters.year)))}</strong><button type="button" class="icon-btn" data-simple-month="1" aria-label="Naslednji mesec" ${isFutureMonth(nextMonthPeriod(Number(filters.month), Number(filters.year)).month, nextMonthPeriod(Number(filters.month), Number(filters.year)).year) ? "disabled" : ""}>›</button></div>`;
+}
+
+function shiftFilterMonth(step) {
+  const target = step < 0 ? previousMonthPeriod(Number(filters.month), Number(filters.year)) : nextMonthPeriod(Number(filters.month), Number(filters.year));
+  if (isFutureMonth(target.month, target.year)) return;
+  filters.month = target.month;
+  filters.year = target.year;
+  render();
+}
+
+function simpleEntryRows(month = filters.month, year = filters.year) {
+  const expenses = (state.expenses || []).filter((item) => sameMonth(item, "date", month, year)).map((item) => ({ ...item, collection: "expenses", signedAmount: -Math.abs(Number(item.amount || 0)) }));
+  const incomes = (state.incomes || []).filter((item) => sameMonth(item, "date", month, year)).map((item) => ({ ...item, collection: "incomes", signedAmount: Math.abs(Number(item.amount || 0)) }));
+  return [...expenses, ...incomes].sort((a, b) => String(b.date).localeCompare(String(a.date)));
+}
+
+function simpleEntryList(rows) {
+  if (!rows.length) return `<div class="empty">Ta mesec še ni vnosov. Dodaj prvega z gumbom zgoraj.</div>`;
+  let lastDate = "";
+  return `<div class="simple-list">${rows.map((row) => {
+    const header = row.date !== lastDate ? `<div class="simple-day">${escapeHtml(shortDate(row.date))}</div>` : "";
+    lastDate = row.date;
+    return `${header}<div class="simple-row">
+      <i>${categoryEmoji(row.category)}</i>
+      <div><strong>${escapeHtml(row.name || capitalize(row.category))}</strong><small>${escapeHtml(capitalize(row.category || "drugo"))}${row.account ? ` · ${escapeHtml(row.account)}` : ""}</small></div>
+      <b class="${row.signedAmount < 0 ? "negative" : "positive"}">${money(row.signedAmount)}</b>
+      ${rowActionMenu(row.collection, row.id)}
+    </div>`;
+  }).join("")}</div>`;
+}
+
+function simpleHomeView() {
+  const data = monthlyData();
+  const spent = data.expenseTotal;
+  const income = data.incomeTotal;
+  const budgetTotal = sum(state.budgets || [], "monthlyAmount");
+  const limit = budgetTotal || income;
+  const left = limit - spent;
+  const percent = limit > 0 ? Math.min(100, spent / limit * 100) : 0;
+  const topCategories = groupBy(data.expenses, "category").sort((a, b) => b[1] - a[1]).slice(0, 3);
+  const recent = simpleEntryRows().slice(0, 5);
+  return `<section class="card simple-hero"><div class="card-body">
+      <span class="muted">Porabljeno v ${escapeHtml(monthLabel(filters.month, filters.year))}</span>
+      <strong class="simple-big">${money(spent)}</strong>
+      ${limit > 0 ? `<div class="progress${percent >= 100 ? " over" : ""}" style="--value:${percent}%"><span></span></div>
+      <p>${left >= 0 ? `Ostane še <b class="positive">${money(left)}</b>` : `Čez za <b class="negative">${money(-left)}</b>`} ${budgetTotal ? "do proračuna" : "od prihodkov"}.</p>` : `<p class="muted">Ko vneseš prihodke ali proračun, bo tu pisalo, koliko ti še ostane.</p>`}
+      <button class="button simple-add" type="button" data-add="quickEntry">${icon("plus")} Dodaj strošek</button>
+    </div></section>
+    ${simpleReviewCard()}
+    <section class="card simple-card"><div class="card-header"><h3>Kam je šlo največ</h3><button class="button secondary" type="button" data-nav="overview">Več</button></div><div class="card-body">
+      ${topCategories.length ? `<div class="simple-top">${topCategories.map(([category, value]) => `<div><i>${categoryEmoji(category)}</i><span>${escapeHtml(capitalize(category))}</span><b>${money(value)}</b></div>`).join("")}</div>` : `<div class="empty">Ta mesec še ni stroškov.</div>`}
+    </div></section>
+    <section class="card simple-card"><div class="card-header"><h3>Zadnji vnosi</h3><button class="button secondary" type="button" data-nav="transactions">Vsi</button></div><div class="card-body">${simpleEntryList(recent)}</div></section>`;
+}
+
+function simpleEntriesView() {
+  const rows = simpleEntryRows();
+  const spent = sum(rows.filter((row) => row.signedAmount < 0), "amount");
+  const earned = sum(rows.filter((row) => row.signedAmount > 0), "amount");
+  return `${simpleMonthNav()}
+    <section class="card simple-card"><div class="card-header"><div class="simple-totals"><span>Stroški <b class="negative">${money(spent)}</b></span><span>Prihodki <b class="positive">${money(earned)}</b></span></div><button class="button" type="button" data-add="quickEntry">${icon("plus")} Dodaj</button></div>
+    <div class="card-body">${simpleEntryList(rows)}</div></section>
+    <p class="simple-footnote"><button class="link-button" type="button" data-nav="imports">Uvozi bančni izpisek</button></p>`;
+}
+
+function simpleOverviewView() {
+  const data = monthlyData();
+  const previous = previousMonthPeriod(Number(filters.month), Number(filters.year));
+  const before = new Map(groupBy(monthlyData(previous.month, previous.year).expenses, "category"));
+  const categories = groupBy(data.expenses, "category").sort((a, b) => b[1] - a[1]);
+  const saved = data.incomeTotal - data.expenseTotal;
+  return `${simpleMonthNav()}
+    <section class="grid metrics simple-metrics">
+      <article class="card metric"><span>Stroški</span><strong class="negative">${money(data.expenseTotal)}</strong></article>
+      <article class="card metric"><span>Prihodki</span><strong class="positive">${money(data.incomeTotal)}</strong></article>
+      <article class="card metric"><span>Ostalo</span><strong class="${saved >= 0 ? "positive" : "negative"}">${money(saved)}</strong></article>
+    </section>
+    <section class="card simple-card"><div class="card-header"><h3>Po kategorijah</h3><span class="pill">primerjava s prejšnjim mesecem</span></div><div class="card-body">
+      ${categories.length ? `<div class="simple-top">${categories.map(([category, value]) => {
+        const last = Number(before.get(category) || 0);
+        const diff = value - last;
+        return `<div><i>${categoryEmoji(category)}</i><span>${escapeHtml(capitalize(category))}<small>${last ? `prej ${money(last)}` : "prejšnji mesec nič"}</small></span><b>${money(value)}${last && Math.abs(diff) >= 1 ? `<small class="${diff > 0 ? "negative" : "positive"}">${diff > 0 ? "▲" : "▼"} ${money(Math.abs(diff))}</small>` : ""}</b></div>`;
+      }).join("")}</div>` : `<div class="empty">V tem mesecu ni stroškov.</div>`}
+    </div></section>
+    ${openPaybacksCard()}
+    <section class="card simple-card"><div class="card-header"><h3>Stroški po mesecih</h3></div><div class="card-body">${columnChart(monthlyExpenseColumns(), (value) => Math.round(value).toLocaleString("sl-SI"))}</div></section>`;
+}
+
+function simpleModeSettingsCard() {
+  const simple = isSimpleMode();
+  return `<div class="card"><div class="card-header"><div><h3>Način prikaza</h3><p>${simple ? "Preprost način: Domov, Vnosi in Pregled ter hiter vnos v treh dotikih." : "Polni način: vse funkcije, uvoz, premoženje, obveznosti in analitika."} Podatki so v obeh načinih enaki.</p></div></div><div class="card-body">
+    <div class="simple-kind"><button type="button" class="${simple ? "active" : ""}" data-simple-mode="on">Preprost</button><button type="button" class="${simple ? "" : "active"}" data-simple-mode="off">Polni</button></div>
+  </div></div>`;
+}
+
+function setSimpleMode(on) {
+  state.settings.simpleMode = Boolean(on);
+  active = on ? "dashboard" : "settings";
+  save();
+  render();
 }
 
 function recentTransactions(limit = 10) {
@@ -7289,6 +7568,7 @@ function settingsView() {
 
 function settingsGeneralView() {
   return `${pwaInstallView()}
+    ${simpleModeSettingsCard()}
     <div class="card profile-settings">
       <div class="card-header"><div><h3>Moj profil</h3><p>Prijavljen kot ${escapeHtml(currentProfile.name)}.</p></div><span class="pill">${currentProfile.role === "admin" ? "Skrbnik" : "Uporabnik"}</span></div>
       <div class="card-body"><form class="form-grid" data-change-profile-key>
@@ -7779,10 +8059,18 @@ function modalTitle() {
   return `${modal.item ? "Uredi" : "Dodaj"} ${subject}`;
 }
 
+// Simple mode edits only what people think about: when, what, how much, which category and account.
+const SIMPLE_FORM_FIELDS = new Set(["date", "name", "amount", "category", "account", "note"]);
+
+function formFields(collection) {
+  const list = fields[collection] || [];
+  return isSimpleMode() && ["expenses", "incomes"].includes(collection) ? list.filter(([name]) => SIMPLE_FORM_FIELDS.has(name)) : list;
+}
+
 function modalHtml() {
   if (modal.collection === "deleteProfile") return deleteProfileModalHtml();
   if (modal.collection === "closeMonth") return closeMonthModalHtml();
-  if (modal.collection === "quickEntry") return quickEntryModalHtml();
+  if (modal.collection === "quickEntry") return isSimpleMode() ? simpleEntryModalHtml() : quickEntryModalHtml();
   if (modal.collection === "linkReimbursement") return reimbursementDialogHtml();
   if (modal.collection === "sharedExpense") return sharedExpenseModalHtml();
   const current = modal.item || defaults(modal.collection);
@@ -7791,8 +8079,10 @@ function modalHtml() {
       <div class="modal-head"><h3>${escapeHtml(modalTitle())}</h3><button type="button" class="icon-btn" data-action="close">X</button></div>
       <div class="modal-body form-grid">
         <input type="hidden" name="id" value="${current.id || ""}">
-        ${fields[modal.collection].map(([name, type, label, options]) => fieldHtml(name, type, label, current[name], options)).join("")}
-        ${modal.collection === "expenses" && !modal.item ? recurringExpenseOptionHtml(current) : ""}
+        ${formFields(modal.collection).map(([name, type, label, options]) => fieldHtml(name, type, label, current[name], options)).join("")}
+        ${isSimpleMode() && !modal.item && modal.collection === "expenses" ? `<input type="hidden" name="kind" value="variabilen">` : ""}
+        ${isSimpleMode() && !modal.item && modal.collection === "incomes" ? `<input type="hidden" name="incomeType" value="reden">` : ""}
+        ${modal.collection === "expenses" && !modal.item && !isSimpleMode() ? recurringExpenseOptionHtml(current) : ""}
         ${modal.collection === "incomes" ? reimbursementFieldsHtml(current) : ""}
       </div>
       <div class="modal-foot"><button type="button" class="button secondary" data-action="close">Prekliči</button><button class="button" type="submit">Shrani</button></div>
@@ -7908,11 +8198,11 @@ function saveQuickEntry(values) {
   const amount = Math.abs(Number(values.amount || 0));
   if (!amount || !values.description) return;
   if (values.kind === "prihodek") {
-    upsertIncome({ date: iso(currentYear, currentMonth, now.getDate()), name: values.description, amount, category: values.category, incomeType: "reden", source: "Hitri vnos", account: values.account, note: "" }, true);
+    upsertIncome({ date: values.date || iso(currentYear, currentMonth, now.getDate()), name: values.description, amount, category: values.category, incomeType: "reden", source: "Hitri vnos", account: values.account, note: "" }, true);
     state.settings.lastIncomeCategory = values.category;
     state.settings.lastIncomeAccount = values.account;
   } else {
-    upsertExpense({ date: iso(currentYear, currentMonth, now.getDate()), name: values.description, amount, category: values.category, subcategory: "", account: values.account, kind: "variabilen", note: "" }, true);
+    upsertExpense({ date: values.date || iso(currentYear, currentMonth, now.getDate()), name: values.description, amount, category: values.category, subcategory: "", account: values.account, kind: "variabilen", note: "" }, true);
     state.settings.lastExpenseCategory = values.category;
     state.settings.lastExpenseAccount = values.account;
   }
@@ -8344,6 +8634,17 @@ function bind() {
     dayInput.disabled = !toggle.checked;
     if (toggle.checked) dayInput.focus();
   }));
+  document.querySelectorAll("[data-simple-entry-form]").forEach((form) => form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    saveSimpleEntry(Object.fromEntries(new FormData(form).entries()));
+  }));
+  document.querySelectorAll("[data-simple-kind]").forEach((btn) => btn.addEventListener("click", () => {
+    const amount = btn.closest("form")?.elements?.amount?.value || "";
+    modal = { ...modal, item: { kind: btn.dataset.simpleKind, amount } };
+    render();
+  }));
+  document.querySelectorAll("[data-simple-month]").forEach((btn) => btn.addEventListener("click", () => shiftFilterMonth(Number(btn.dataset.simpleMonth))));
+  document.querySelectorAll("[data-simple-mode]").forEach((btn) => btn.addEventListener("click", () => setSimpleMode(btn.dataset.simpleMode === "on")));
   document.querySelectorAll("[data-quick-entry-form]").forEach((form) => form.addEventListener("submit", (event) => {
     event.preventDefault();
     saveQuickEntry(Object.fromEntries(new FormData(form).entries()));
@@ -8520,6 +8821,7 @@ function bind() {
     const tx = (state.transactions || []).find((item) => item.id === btn.dataset.reviewConfirm);
     confirmReviewCategory(btn.dataset.reviewConfirm, select?.value || tx?.category);
   }));
+  document.querySelectorAll("[data-simple-review]").forEach((btn) => btn.addEventListener("click", () => confirmReviewCategory(btn.dataset.simpleReview, btn.dataset.category)));
   document.querySelectorAll("[data-action='link-review-reimbursements']").forEach((btn) => btn.addEventListener("click", () => openReimbursementDialog(reviewReimbursements().map((tx) => ({ kind: "tx", id: tx.id })))));
   document.querySelectorAll("[data-link-reimbursement]").forEach((btn) => btn.addEventListener("click", () => openReimbursementDialog([{ kind: "income", id: btn.dataset.linkReimbursement }])));
   document.querySelectorAll("[data-link-reimbursement-form]").forEach((form) => {
