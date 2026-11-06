@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "119";
+const APP_VERSION = "120";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -199,7 +199,7 @@ const fields = {
     ["year", "number", "Leto"],
     ["assets", "number", "Skupna sredstva"],
     ["liabilities", "number", "Skupne obveznosti"],
-    ["netWorth", "number", "Net worth"],
+    ["netWorth", "number", "Neto vrednost"],
     ["note", "textarea", "Opomba"],
   ],
   monthlyNotes: [
@@ -294,7 +294,7 @@ const navItems = [
   ["accounts", "Računi", "Denarnice in sredstva"],
   ["wealth", "Premoženje", "Računi, investicije in net worth"],
   ["investments", "Investicije", "Ročna evidenca portfelja"],
-  ["networth", "Net worth", "Sredstva minus obveznosti"],
+  ["networth", "Neto vrednost", "Sredstva minus obveznosti"],
   ["liabilities", "Obveznosti", "Roki in večja plačila"],
   ["taxes", "Davki", "Evidenca davčnih dogodkov"],
   ["goals", "Cilji", "Napredek finančnih ciljev"],
@@ -338,7 +338,7 @@ const dashboardNavTargets = {
   "Stroški": "expenses",
   "Prihranek": "monthly",
   "Investirano": "investments",
-  "Net worth": "networth",
+  "Neto vrednost": "networth",
   "Obveznosti": "liabilities",
 };
 
@@ -368,12 +368,12 @@ function icon(name) {
 }
 
 const metricIcons = {
-  Prihodki: "PR",
-  Stroški: "ST",
-  Prihranek: "PI",
-  Investirano: "IN",
-  "Net worth": "NW",
-  Obveznosti: "OB",
+  Prihodki: "arrowUp",
+  Stroški: "arrowDown",
+  Prihranek: "wallet",
+  Investirano: "trend",
+  "Neto vrednost": "chart",
+  Obveznosti: "calendar",
 };
 
 const profileSystem = await initializeProfileSystem();
@@ -2273,6 +2273,13 @@ function monthLabel(month, year) {
   return new Date(year, month - 1, 1).toLocaleDateString("sl-SI", { month: "long", year: "numeric" });
 }
 
+// "v novembru 2026": the month as it reads after "v".
+const MONTHS_LOCATIVE = ["januarju", "februarju", "marcu", "aprilu", "maju", "juniju", "juliju", "avgustu", "septembru", "oktobru", "novembru", "decembru"];
+
+function monthLabelIn(month, year) {
+  return `${MONTHS_LOCATIVE[Number(month) - 1] || ""} ${year}`;
+}
+
 // Shared expenses: when you pay for a group and friends pay you back, the money that comes back is not
 // income and the part you paid for others is not your spending. Account balances stay untouched (the
 // money really moved); only reporting nets the reimbursement against the expense it covers.
@@ -3581,10 +3588,8 @@ function render() {
             <p>${item[2]}</p>
           </div>
           <div class="actions">
-            <span class="date-pill">${monthLabel(filters.month, filters.year)}</span>
             ${addActionMenu()}
             ${cloudStatusButton()}
-            <button class="icon-btn top-icon" title="Nastavitve" aria-label="Nastavitve" data-nav="settings">${icon("settings")}</button>
           </div>
         </div>
         ${initialSyncRunning ? `<div class="sync-banner" role="status">${icon("sync")}<span>Nalagam najnovejše podatke … Prikaz se lahko še spremeni.</span></div>` : ""}
@@ -3654,9 +3659,8 @@ function profileInitials(name) {
 }
 
 function addActionMenu() {
-  if (isSimpleMode()) {
-    return `<button class="button add-main" type="button" aria-label="Dodaj" data-add="quickEntry">${icon("plus")}<span>Dodaj</span></button>`;
-  }
+  // Simple mode has its own labelled add buttons on Domov and Vnosi.
+  if (isSimpleMode()) return "";
   const actions = [
     ["quickEntry", "Hitri vnos", "plus"],
     ["incomes", "Prihodek", "arrowUp"],
@@ -3674,14 +3678,16 @@ function addActionMenu() {
   </div>`;
 }
 
+const CLOUD_STATE_LABELS = { success: "Shranjeno", pending: "Shranjujem", error: "Preveri", local: "Na napravi" };
+
 function cloudStatusButton() {
   const title = cloudStatus.message || "Stanje sinhronizacije";
-  return `<button class="icon-btn top-icon cloud-indicator ${cloudStatus.state}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" data-action="cloud-status">${icon("sync")}<i></i></button>`;
+  return `<button class="icon-btn top-icon cloud-indicator ${cloudStatus.state}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" data-action="cloud-status">${icon("sync")}<span>${CLOUD_STATE_LABELS[cloudStatus.state] || "Sinhronizacija"}</span><i></i></button>`;
 }
 
 function view() {
   const transactionTabs = [["transactions", "Vse"], ["incomes", "Prihodki"], ["expenses", "Stroški"]];
-  const wealthTabs = [["wealth", "Računi"], ["investments", "Investicije"], ["networth", "Net worth"]];
+  const wealthTabs = [["wealth", "Računi"], ["investments", "Investicije"], ["networth", "Neto vrednost"]];
   const liabilityTabs = [["liabilities", "Obveznosti"], ["taxes", "Davki"]];
   const reviewTabs = [["goals", "Cilji"], ["monthly", "Mesečni pregled"], ["analytics", "Analitika"]];
   if (isSimpleMode()) {
@@ -3721,15 +3727,15 @@ function dashboardView() {
   const reviewCount = reviewTransactions().length;
   const liquidAccounts = data.countedAccounts.filter(isSpendableAccount);
   const netWorthHint = data.netWorthChange === null
-    ? "primerjava bo na voljo po naslednjem snapshotu"
+    ? "primerjava bo na voljo po naslednjem zaključenem mesecu"
     : `${signed(data.netWorthChange)} od prejšnjega meseca`;
   const metrics = [
     ["Prihodki", data.incomeTotal, monthLabel(filters.month, filters.year), "positive"],
     ["Stroški", data.expenseTotal, monthLabel(filters.month, filters.year), "negative"],
     ["Prihranek", data.saved, `${NUMBER.format(data.savingsRate)} % plače`, data.saved >= 0 ? "positive" : "negative"],
     ["Investirano", data.invested, "dodano v mesecu", "positive"],
-    ["Net worth", data.netWorth, netWorthHint, data.netWorthChange === null || data.netWorthChange >= 0 ? "positive" : "negative"],
-    ["Obveznosti", data.liabilities, `${reviewCount} transakcij za pregled`, "warning"],
+    ["Neto vrednost", data.netWorth, netWorthHint, data.netWorthChange === null || data.netWorthChange >= 0 ? "positive" : "negative"],
+    ["Obveznosti", data.liabilities, upcomingLiabilities().length ? `${upcomingLiabilities().length} z rokom v 30 dneh` : "ni rokov v naslednjih 30 dneh", "warning"],
   ];
   return `
     ${dataHealthDashboardNotice()}
@@ -3737,7 +3743,7 @@ function dashboardView() {
     <section class="grid metrics">${metrics.map(metricCard).join("")}</section>
     <section class="dashboard-charts" style="margin-top:14px">
       <div class="card dashboard-link" data-nav="networth">
-        <div class="card-header"><h3>Net worth trend</h3><span class="pill">mesečni snapshoti</span></div>
+        <div class="card-header"><h3>Gibanje neto vrednosti</h3><span class="pill">ob zaključkih mesecev</span></div>
         <div class="card-body">${trendChart(netWorthSeries())}</div>
       </div>
       <div class="card dashboard-link" data-nav="analytics">
@@ -3761,7 +3767,7 @@ function dashboardView() {
 
 function metricCard([label, value, hint, tone]) {
   const target = dashboardNavTargets[label] || "";
-  return `<article class="card metric ${target ? "dashboard-link" : ""}" ${target ? `data-nav="${target}"` : ""}><div class="metric-top"><span>${label}</span><i class="metric-icon ${tone}">${metricIcons[label] || "€"}</i></div><strong class="${tone}">${money(value)}</strong><small>${hint}</small></article>`;
+  return `<article class="card metric ${target ? "dashboard-link" : ""}" ${target ? `data-nav="${target}"` : ""}><div class="metric-top"><span>${label}</span><i class="metric-icon ${tone}">${metricIcons[label] ? icon(metricIcons[label]) : "€"}</i></div><strong class="${tone}">${money(value)}</strong><small>${hint}</small></article>`;
 }
 
 function unavailableMetric(label, hint) {
@@ -5018,7 +5024,7 @@ function isSimpleMode() {
 
 const SIMPLE_VIEWS = new Set(["dashboard", "transactions", "overview", "settings", "imports", "setup"]);
 const SIMPLE_TITLES = {
-  dashboard: ["Domov", "Kako ti gre ta mesec"],
+  dashboard: ["Domov", "Tvoj mesec na hitro"],
   transactions: ["Vnosi", "Vsi stroški in prihodki"],
   overview: ["Pregled", "Kam gre denar"],
 };
@@ -5088,6 +5094,20 @@ function simpleDefaultAccount(kind) {
     || "";
 }
 
+// The account each category is usually paid from (last 120 days), so food on Revolut stays on Revolut.
+function simpleAccountByCategory(kind, accounts) {
+  const names = new Set(accounts.map((account) => account.name));
+  const since = new Date(now.getTime() - 120 * 86400000).toISOString().slice(0, 10);
+  const counts = new Map();
+  for (const item of kind === "prihodek" ? state.incomes || [] : state.expenses || []) {
+    if (!item.category || !names.has(item.account) || String(item.date || "") < since) continue;
+    const byAccount = counts.get(item.category) || new Map();
+    byAccount.set(item.account, (byAccount.get(item.account) || 0) + 1);
+    counts.set(item.category, byAccount);
+  }
+  return Object.fromEntries([...counts].map(([category, byAccount]) => [category, [...byAccount].sort((a, b) => b[1] - a[1])[0][0]]));
+}
+
 function simpleEntryModalHtml() {
   const kind = modal.item?.kind === "prihodek" ? "prihodek" : "strošek";
   const categories = simpleEntryCategories(kind);
@@ -5095,8 +5115,9 @@ function simpleEntryModalHtml() {
   const more = categories.slice(8);
   const accounts = (state.accounts || []).filter(isSpendableAccount);
   const account = simpleDefaultAccount(kind);
-  const chip = (category, checked) => `<label class="simple-chip"><input type="radio" name="category" value="${escapeAttr(category)}" ${checked ? "checked" : ""} required><span><i>${categoryEmoji(category)}</i>${escapeHtml(capitalize(category))}</span></label>`;
-  return `<div class="modal-backdrop"><form class="modal simple-entry-modal" data-simple-entry-form>
+  const accountByCategory = simpleAccountByCategory(kind, accounts);
+  const chip = (category, checked) => `<label class="simple-chip"><input type="radio" name="category" value="${escapeAttr(category)}" ${checked ? "checked" : ""}><span><i>${categoryEmoji(category)}</i>${escapeHtml(capitalize(category))}</span></label>`;
+  return `<div class="modal-backdrop"><form class="modal simple-entry-modal" data-simple-entry-form data-category-accounts="${escapeAttr(JSON.stringify(accountByCategory))}">
     <div class="modal-head"><h3>${kind === "prihodek" ? "Nov prihodek" : "Nov strošek"}</h3><button type="button" class="icon-btn" data-action="close">X</button></div>
     <div class="modal-body">
       <div class="simple-kind" role="tablist">
@@ -5107,11 +5128,12 @@ function simpleEntryModalHtml() {
       <label class="simple-amount"><span>Znesek</span><input name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" placeholder="0,00" value="${escapeAttr(modal.item?.amount || "")}" autofocus required><b>€</b></label>
       <div class="simple-chips">${shown.map((category) => chip(category, false)).join("")}</div>
       ${more.length ? `<details class="simple-more"><summary>Več kategorij</summary><div class="simple-chips">${more.map((category) => chip(category, false)).join("")}</div></details>` : ""}
+      <p class="simple-error" data-simple-error hidden>Izberi kategorijo.</p>
+      <label class="simple-account">${kind === "prihodek" ? "Prejeto na" : "Plačano z"}<select name="account" data-simple-account>${accounts.map((item) => option(item.name, account)).join("")}</select></label>
       <details class="simple-more">
-        <summary>Opis, račun in datum</summary>
+        <summary>Opis in datum</summary>
         <div class="form-grid">
           <label class="full">Opis (neobvezno)<input name="description" type="text" placeholder="npr. Mercator"></label>
-          <label>Račun<select name="account">${accounts.map((item) => option(item.name, account)).join("")}</select></label>
           <label>Datum<input name="date" type="date" value="${escapeAttr(iso(currentYear, currentMonth, now.getDate()))}"></label>
         </div>
       </details>
@@ -5194,21 +5216,42 @@ function simpleEntryList(rows) {
   }).join("")}</div>`;
 }
 
+// What a month usually brings in: the median of the last three months that had income. Used while
+// this month's pay has not arrived yet (or came at the end of the previous month).
+function typicalMonthlyIncome(month = filters.month, year = filters.year) {
+  const values = [];
+  let period = { month: Number(month), year: Number(year) };
+  for (let i = 0; i < 3; i += 1) {
+    period = previousMonthPeriod(period.month, period.year);
+    const total = monthlyData(period.month, period.year).incomeTotal;
+    if (total > 0) values.push(total);
+  }
+  if (!values.length) return 0;
+  values.sort((a, b) => a - b);
+  const middle = Math.floor(values.length / 2);
+  return values.length % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2;
+}
+
 function simpleHomeView() {
   const data = monthlyData();
   const spent = data.expenseTotal;
   const income = data.incomeTotal;
   const budgetTotal = sum(state.budgets || [], "monthlyAmount");
-  const limit = budgetTotal || income;
+  const isCurrent = Number(filters.month) === currentMonth && Number(filters.year) === currentYear;
+  const typical = isCurrent ? typicalMonthlyIncome() : 0;
+  const incomeBase = Math.max(income, typical);
+  const limit = budgetTotal || incomeBase;
+  const baseLabel = budgetTotal ? "do proračuna" : incomeBase > income ? "od običajnih mesečnih prihodkov" : "od prihodkov";
   const left = limit - spent;
   const percent = limit > 0 ? Math.min(100, spent / limit * 100) : 0;
   const topCategories = groupBy(data.expenses, "category").sort((a, b) => b[1] - a[1]).slice(0, 3);
   const recent = simpleEntryRows().slice(0, 5);
-  return `<section class="card simple-hero"><div class="card-body">
-      <span class="muted">Porabljeno v ${escapeHtml(monthLabel(filters.month, filters.year))}</span>
+  return `${simpleMonthNav()}
+    <section class="card simple-hero"><div class="card-body">
+      <span class="muted">Porabljeno v ${escapeHtml(monthLabelIn(filters.month, filters.year))}</span>
       <strong class="simple-big">${money(spent)}</strong>
       ${limit > 0 ? `<div class="progress${percent >= 100 ? " over" : ""}" style="--value:${percent}%"><span></span></div>
-      <p>${left >= 0 ? `Ostane še <b class="positive">${money(left)}</b>` : `Čez za <b class="negative">${money(-left)}</b>`} ${budgetTotal ? "do proračuna" : "od prihodkov"}.</p>` : `<p class="muted">Ko vneseš prihodke ali proračun, bo tu pisalo, koliko ti še ostane.</p>`}
+      <p>${left >= 0 ? `Ostane še <b class="positive">${money(left)}</b>` : `Čez za <b class="negative">${money(-left)}</b>`} ${baseLabel}.</p>` : `<p class="muted">Ko vneseš prihodke ali proračun, bo tu pisalo, koliko ti še ostane.</p>`}
       <button class="button simple-add" type="button" data-add="quickEntry">${icon("plus")} Dodaj strošek</button>
     </div></section>
     ${simpleReviewCard()}
@@ -5218,20 +5261,46 @@ function simpleHomeView() {
     <section class="card simple-card"><div class="card-header"><h3>Zadnji vnosi</h3><button class="button secondary" type="button" data-nav="transactions">Vsi</button></div><div class="card-body">${simpleEntryList(recent)}</div></section>`;
 }
 
+function simpleReviewOptions(tx) {
+  const categories = Number(tx.amount) < 0 ? expenseCategories : incomeCategories;
+  return visibleCategories(categories).filter((category) => !["za pregled", "interni transfer"].includes(category))
+    .map((category) => `<option value="${escapeAttr(category)}">${categoryEmoji(category)} ${escapeHtml(capitalize(category))}</option>`).join("");
+}
+
+// Imported payments of this month that still wait for a category: not counted yet, but visible.
+function simpleWaitingRows() {
+  const waiting = reviewTransactions().filter((tx) => tx.status === "za pregled" && sameMonth(tx, "date", filters.month, filters.year));
+  if (!waiting.length) return "";
+  return `<div class="simple-waiting">
+    <div class="simple-waiting-head"><strong>Čaka kategorijo (${waiting.length})</strong><small>Iz uvoza. Med stroške in prihodke se šteje, ko izbereš kategorijo.</small></div>
+    ${waiting.map((tx) => `<div class="simple-row waiting">
+      <i>❔</i>
+      <div><strong>${escapeHtml(tx.description || "Transakcija")}</strong><small>${escapeHtml(shortDate(tx.date))}${tx.account ? ` · ${escapeHtml(tx.account)}` : ""}</small></div>
+      <b class="${Number(tx.amount) < 0 ? "negative" : "positive"}">${money(Number(tx.amount || 0))}</b>
+      <select class="simple-waiting-pick" data-review-category="${escapeAttr(tx.id)}" aria-label="Izberi kategorijo"><option value="">Izberi kategorijo …</option>${simpleReviewOptions(tx)}</select>
+    </div>`).join("")}
+  </div>`;
+}
+
 function simpleEntriesView() {
   const rows = simpleEntryRows();
   const spent = sum(rows.filter((row) => row.signedAmount < 0), "amount");
   const earned = sum(rows.filter((row) => row.signedAmount > 0), "amount");
   return `${simpleMonthNav()}
     <section class="card simple-card"><div class="card-header"><div class="simple-totals"><span>Stroški <b class="negative">${money(spent)}</b></span><span>Prihodki <b class="positive">${money(earned)}</b></span></div><button class="button" type="button" data-add="quickEntry">${icon("plus")} Dodaj</button></div>
-    <div class="card-body">${simpleEntryList(rows)}</div></section>
+    <div class="card-body">${simpleWaitingRows()}${simpleEntryList(rows)}</div></section>
     <p class="simple-footnote"><button class="link-button" type="button" data-nav="imports">Uvozi bančni izpisek</button></p>`;
 }
 
 function simpleOverviewView() {
   const data = monthlyData();
   const previous = previousMonthPeriod(Number(filters.month), Number(filters.year));
-  const before = new Map(groupBy(monthlyData(previous.month, previous.year).expenses, "category"));
+  const isCurrent = Number(filters.month) === currentMonth && Number(filters.year) === currentYear;
+  const today = now.getDate();
+  // A month in progress is compared with the same days of the previous month, not the whole month.
+  const previousRows = monthlyData(previous.month, previous.year).expenses
+    .filter((row) => !isCurrent || Number(String(row.date || "").slice(8, 10)) <= today);
+  const before = new Map(groupBy(previousRows, "category"));
   const categories = groupBy(data.expenses, "category").sort((a, b) => b[1] - a[1]);
   const saved = data.incomeTotal - data.expenseTotal;
   return `${simpleMonthNav()}
@@ -5240,7 +5309,7 @@ function simpleOverviewView() {
       <article class="card metric"><span>Prihodki</span><strong class="positive">${money(data.incomeTotal)}</strong></article>
       <article class="card metric"><span>Ostalo</span><strong class="${saved >= 0 ? "positive" : "negative"}">${money(saved)}</strong></article>
     </section>
-    <section class="card simple-card"><div class="card-header"><h3>Po kategorijah</h3><span class="pill">primerjava s prejšnjim mesecem</span></div><div class="card-body">
+    <section class="card simple-card"><div class="card-header"><h3>Po kategorijah</h3><span class="pill">${isCurrent ? `primerjava s prvimi ${today} dnevi prejšnjega meseca` : "primerjava s prejšnjim mesecem"}</span></div><div class="card-body">
       ${categories.length ? `<div class="simple-top">${categories.map(([category, value]) => {
         const last = Number(before.get(category) || 0);
         const diff = value - last;
@@ -5370,17 +5439,17 @@ function investmentAccounts() {
 
 function netWorthSourceHtml(data) {
   const sourceLabel = data.netWorthSource === "snapshot"
-    ? `Snapshot za ${monthLabel(filters.month, filters.year)}`
+    ? `Posnetek za ${monthLabel(filters.month, filters.year)}`
     : "Trenutno stanje računov";
   const detail = data.netWorthSource === "snapshot"
-    ? "Za izbran pretekli mesec aplikacija uporabi shranjen mesečni snapshot. Današnje spremembe računov tega meseca ne prepisujejo več."
+    ? "Za izbran pretekli mesec aplikacija uporabi posnetek, shranjen ob zaključku meseca. Današnje spremembe računov tega meseca ne prepisujejo več."
     : "Za trenutni mesec aplikacija sešteje trenutna sredstva in odšteje odprte obveznosti.";
   return `<section class="card" style="margin-top:14px">
     <div class="card-header"><div><h3>Vir net worth izračuna</h3><p>${escapeHtml(detail)}</p></div><span class="pill">${escapeHtml(sourceLabel)}</span></div>
     <div class="card-body nw-breakdown">
       <div><span>Sredstva v izračunu</span><strong class="positive">${money(data.assets)}</strong></div>
       <div><span>Obveznosti v izračunu</span><strong class="negative">${money(data.liabilities)}</strong></div>
-      <div><span>Net worth</span><strong>${money(data.netWorth)}</strong></div>
+      <div><span>Neto vrednost</span><strong>${money(data.netWorth)}</strong></div>
     </div>
   </section>`;
 }
@@ -5390,7 +5459,7 @@ function flatNetWorthWarning(rows) {
   if (recent.length < 3) return "";
   const values = recent.map((item) => Math.round(Number(item.netWorth || 0) * 100));
   if (new Set(values).size !== 1) return "";
-  return `<div class="notice warning" style="margin-bottom:12px">Zadnji trije snapshoti imajo enak net worth (${money(recent[0].netWorth)}). To običajno pomeni, da so bili pretekli meseci zaključeni z istim trenutnim stanjem računov. Popravi vrednosti v tabeli "Mesečni snapshoti", če poznaš dejanska stanja za te mesece.</div>`;
+  return `<div class="notice warning" style="margin-bottom:12px">Zadnji trije posnetki imajo enako neto vrednost (${money(recent[0].netWorth)}). To običajno pomeni, da so bili pretekli meseci zaključeni z istim trenutnim stanjem računov. Popravi vrednosti v tabeli "Mesečni posnetki", če poznaš dejanska stanja za te mesece.</div>`;
 }
 
 function netWorthView() {
@@ -5400,7 +5469,7 @@ function netWorthView() {
   <section class="grid metrics">
     ${metricCard(["Sredstva", data.assets, `${money(data.accountAssets)} premoženje + ${money(data.investmentAssets)} investicije`, "positive"])}
     ${metricCard(["Obveznosti", data.liabilities, `${data.countedLiabilities.length} odprtih postavk`, "warning"])}
-    ${metricCard(["Net worth", data.netWorth, "sredstva minus obveznosti", data.netWorth >= 0 ? "positive" : "negative"])}
+    ${metricCard(["Neto vrednost", data.netWorth, "sredstva minus obveznosti", data.netWorth >= 0 ? "positive" : "negative"])}
   </section>
   ${netWorthSourceHtml(data)}
   <section class="grid three-col" style="margin-top:14px">
@@ -5409,8 +5478,8 @@ function netWorthView() {
     <div class="card"><div class="card-header"><h3>Obveznosti</h3><strong class="negative">${money(data.liabilities)}</strong></div><div class="card-body">${netWorthItems(data.countedLiabilities, "amount")}</div></div>
   </section>
   <section class="grid two-col" style="margin-top:14px">
-    <div class="card"><div class="card-header"><h3>Gibanje net worth</h3></div><div class="card-body">${flatNetWorthWarning(snapshotRows)}${trendChart(snapshotRows.map((s) => [monthLabel(s.month, s.year), s.netWorth]))}</div></div>
-    <div class="card"><div class="card-header"><h3>Mesečni snapshoti</h3></div><div class="card-body table-wrap">${table("snapshots", state.snapshots, [["Mesec", (r) => `${r.month}/${r.year}`], ["Sredstva", (r) => money(r.assets)], ["Obveznosti", (r) => money(r.liabilities)], ["Net worth", (r) => money(r.netWorth)], ["Opomba", (r) => r.note || ""]])}</div></div>
+    <div class="card"><div class="card-header"><h3>Gibanje neto vrednosti</h3></div><div class="card-body">${flatNetWorthWarning(snapshotRows)}${trendChart(snapshotRows.map((s) => [monthLabel(s.month, s.year), s.netWorth]))}</div></div>
+    <div class="card"><div class="card-header"><h3>Mesečni posnetki</h3></div><div class="card-body table-wrap">${table("snapshots", state.snapshots, [["Mesec", (r) => `${r.month}/${r.year}`], ["Sredstva", (r) => money(r.assets)], ["Obveznosti", (r) => money(r.liabilities)], ["Neto vrednost", (r) => money(r.netWorth)], ["Opomba", (r) => r.note || ""]])}</div></div>
   </section>`;
 }
 
@@ -5433,11 +5502,11 @@ function monthlyView() {
   const displayed = closure?.analytics ? { ...data, ...closure.analytics } : data;
   const expenseCategories = closure?.analytics?.expenseByCategory || groupBy(data.expenses, "category");
   const netWorthMetric = displayed.netWorthChange === null
-    ? unavailableMetric("Sprememba NW", "Potrebna sta dva mesečna snapshota")
-    : metricCard(["Sprememba NW", displayed.netWorthChange, "glede na prejšnji snapshot", displayed.netWorthChange >= 0 ? "positive" : "negative"]);
+    ? unavailableMetric("Sprememba neto vrednosti", "Potrebna sta dva zaključena meseca")
+    : metricCard(["Sprememba neto vrednosti", displayed.netWorthChange, "glede na prejšnji zaključen mesec", displayed.netWorthChange >= 0 ? "positive" : "negative"]);
   return `${filterHtml("expenses")}
     <div class="month-close-bar ${closure ? "closed" : ""}">
-      <div><strong>${closure ? "Mesec je zaključen" : "Mesec še ni zaključen"}</strong><span>${closure ? `Zaključeno ${formatSyncTime(closure.closedAt)}. Analitične številke so zaklenjene.${closure.recalculatedAt ? ` Popravljeno ${formatSyncTime(closure.recalculatedAt)}.` : ""}` : "Zaključek shrani snapshot, komentar in budgete ter pripravi naslednji mesec."}</span></div>
+      <div><strong>${closure ? "Mesec je zaključen" : "Mesec še ni zaključen"}</strong><span>${closure ? `Zaključeno ${formatSyncTime(closure.closedAt)}. Analitične številke so zaklenjene.${closure.recalculatedAt ? ` Popravljeno ${formatSyncTime(closure.recalculatedAt)}.` : ""}` : "Zaključek shrani neto vrednost, komentar in budgete ter pripravi naslednji mesec."}</span></div>
       ${closure
         ? `<span class="sync-badge success">Zaklenjeno</span>${currentProfile.role === "admin" ? `<button class="button secondary" type="button" data-action="rebuild-month-closure">Osveži zaključek</button>` : ""}`
         : isFutureMonth(filters.month, filters.year)
@@ -5703,7 +5772,7 @@ function analyticsView() {
     <div class="card"><div class="card-header"><h3>Redni prihodki po mesecih</h3><span class="pill">brez regresa</span></div><div class="card-body">${trendChart(incomeSeries)}</div></div>
     <div class="card"><div class="card-header"><h3>Stroški po mesecih</h3></div><div class="card-body">${trendChart(expenseSeries)}</div></div>
     <div class="card"><div class="card-header"><h3>Savings rate</h3></div><div class="card-body">${trendChart(savingsSeries, "%")}</div></div>
-    <div class="card"><div class="card-header"><h3>Net worth</h3></div><div class="card-body">${trendChart(nwSeries)}</div></div>
+    <div class="card"><div class="card-header"><h3>Neto vrednost</h3></div><div class="card-body">${trendChart(nwSeries)}</div></div>
     <div class="card"><div class="card-header"><h3>Stroški po skupinah</h3><span class="pill">${latestCompleted ? monthLabel(focusMonth, focusYear) : "ni zaključenih mesecev"}</span></div><div class="card-body">${bars(analyticsExpenseGroupEntries(focusMonth, focusYear))}</div></div>
     <div class="card"><div class="card-header"><h3>Stroški po kategorijah</h3><span class="pill">podrobno</span></div><div class="card-body">${bars(analyticsExpenseEntries(focusMonth, focusYear, "category"))}</div></div>
     <div class="card"><div class="card-header"><h3>Struktura stroškov</h3><span class="pill">${latestCompleted ? monthLabel(focusMonth, focusYear) : "ni zaključenih mesecev"}</span></div><div class="card-body">${donutChart(structure)}</div></div>
@@ -6102,7 +6171,7 @@ function setupView() {
     <section class="grid metrics">
       ${metricCard(["Sredstva", data.assets, "trenutni izračun", "positive"])}
       ${metricCard(["Obveznosti", data.liabilities, "odprto", "warning"])}
-      ${metricCard(["Net worth", data.netWorth, "po zadnjih podatkih", data.netWorth >= 0 ? "positive" : "negative"])}
+      ${metricCard(["Neto vrednost", data.netWorth, "po zadnjih podatkih", data.netWorth >= 0 ? "positive" : "negative"])}
     </section>
     <section class="grid two-col" style="margin-top:18px">
       <div class="card">
@@ -6130,7 +6199,7 @@ function setupView() {
     <section class="card" style="margin-top:18px">
       <div class="card-header"><h3>Snapshot</h3><span class="pill">${monthLabel(currentMonth, currentYear)}</span></div>
       <div class="card-body form-grid">
-        <label class="wide">Opomba snapshot-a<textarea name="setupNote">Najnovejši setup podatki</textarea></label>
+        <label class="wide">Opomba posnetka<textarea name="setupNote">Najnovejši setup podatki</textarea></label>
         <label>Mesec<input type="number" min="1" max="12" name="setupMonth" value="${currentMonth}"></label>
         <label>Leto<input type="number" name="setupYear" value="${currentYear}"></label>
         <label class="remember-rule setup-checkbox"><input type="checkbox" name="replaceSetup" checked> Prepiši prejšnje setup zapise</label>
@@ -7794,7 +7863,7 @@ function settingsGeneralView() {
   return `${pwaInstallView()}
     ${simpleModeSettingsCard()}
     <div class="card profile-settings">
-      <div class="card-header"><div><h3>Moj profil</h3><p>Prijavljen kot ${escapeHtml(currentProfile.name)}.</p></div><span class="pill">${currentProfile.role === "admin" ? "Skrbnik" : "Uporabnik"}</span></div>
+      <div class="card-header"><div><h3>Moj profil</h3><p>Prijavljen kot ${escapeHtml(currentProfile.name)}.</p></div><div class="profile-head-actions"><span class="pill">${currentProfile.role === "admin" ? "Skrbnik" : "Uporabnik"}</span><button class="button secondary" type="button" data-action="logout">${icon("logout")} Odjava</button></div></div>
       <div class="card-body"><form class="form-grid" data-change-profile-key>
         <label>Trenutni ključ<input type="password" name="currentKey" autocomplete="current-password" required></label>
         <label>Novi ključ<input type="password" name="newKey" autocomplete="new-password" minlength="4" required></label>
@@ -7802,10 +7871,9 @@ function settingsGeneralView() {
         <div class="profile-form-action"><button class="button" type="submit">Spremeni ključ</button></div>
       </form></div>
     </div>
-    <div class="card"><div class="card-header"><h3>Običajne nastavitve</h3></div><div class="card-body form-grid">
-      <label>Začetni mesec<input type="month" data-setting="startMonth" value="${state.settings.startMonth}"></label>
-      <label>Privzeta valuta<select data-setting="currency"><option value="EUR" selected>EUR</option></select></label>
-      <label>Videz<select data-setting="theme">${option("light", state.settings.theme)}${option("dark", state.settings.theme)}</select></label>
+    <div class="card"><div class="card-header"><h3>Videz</h3></div><div class="card-body form-grid">
+      <label>Tema<select data-setting="theme"><option value="light" ${state.settings.theme === "light" ? "selected" : ""}>Svetla</option><option value="dark" ${state.settings.theme === "dark" ? "selected" : ""}>Temna</option></select></label>
+      ${currentProfile.role === "admin" ? `<label>Začetni mesec<input type="month" data-setting="startMonth" value="${state.settings.startMonth}"></label>` : ""}
     </div></div>
     ${currentProfile.role === "admin" ? roundUpSavingsSettingsView() : ""}`;
 }
@@ -7821,17 +7889,19 @@ function settingsDataView() {
       <button class="button secondary" data-action="export-csv">Izvozi CSV</button>
       ${localBackupButton}
       <label class="button secondary">Uvozi JSON<input type="file" accept="application/json" data-action="import-json" hidden></label>
-      <button class="button secondary" data-nav="setup">Odpri začetni setup</button>
+      <button class="button secondary" data-nav="setup">Popis stanj in premoženja</button>
       ${currentProfile.role === "admin" ? `<button class="button secondary" data-action="repair-income-balances">Poveži prihodke brez računa</button>` : ""}
       ${currentProfile.role === "admin" && (state.monthClosures || []).length ? `<button class="button secondary" data-action="rebuild-all-closures">Preračunaj vse zaključene mesece</button>` : ""}
       ${currentProfile.role === "admin" ? `<button class="button secondary" data-action="relink-account-references">Popravi povezave na stare račune</button>` : ""}
-      <button class="button danger ghost" data-action="clear">Izbriši vse podatke</button>
     </div>
   </div></div>
   ${backupHistoryView()}
   <div class="card"><div class="card-body">
     <p class="settings-note">Uvoz bančnih/Revolut transakcij je zdaj dostopen prek gumba <strong>+ Dodaj → Uvozi transakcije</strong> na strani Transakcije.</p>
     <button class="button secondary" type="button" data-nav="imports">Odpri uvoz transakcij</button>
+  </div></div>
+  <div class="card danger-zone"><div class="card-header"><div><h3>Izbris vseh podatkov</h3><p>Izbriše vse vnose, račune in zaključke tega profila na vseh napravah. Pred tem se na tej napravi naredi kopija.</p></div></div><div class="card-body">
+    <button class="button danger ghost" type="button" data-action="clear">Izbriši vse podatke</button>
   </div></div>`;
 }
 
@@ -7973,7 +8043,7 @@ function refreshAllClosedMonthCategoryAnalytics(reason) {
 
 function backupHistoryView() {
   const backups = backupHistory();
-  return `<div class="card"><div class="card-header"><div><h3>Zadnje različice</h3><p>Samodejna dnevna in ročno ustvarjena stanja te naprave.</p></div><span class="pill">${backups.length} kopij</span></div><div class="card-body">
+  return `<div class="card"><div class="card-header"><div><h3>Zadnje različice</h3><p>Samodejna dnevna in ročno ustvarjena stanja te naprave.</p></div><span class="pill">${backups.length} ${backups.length % 100 === 1 ? "kopija" : backups.length % 100 === 2 ? "kopiji" : [3, 4].includes(backups.length % 100) ? "kopije" : "kopij"}</span></div><div class="card-body">
     ${backups.length ? `<div class="backup-list">${backups.map((backup) => `<article class="backup-row">
       <div><strong>${formatSyncTime(backup.createdAt)}</strong><span>${escapeHtml(backup.reason || "kopija")} · ${escapeHtml(backup.summary || "")}</span></div>
       <div class="actions"><button class="button secondary" type="button" data-restore-backup="${escapeAttr(backup.id)}">Obnovi</button><button class="icon-btn" type="button" title="Izbriši kopijo" data-delete-backup="${escapeAttr(backup.id)}">X</button></div>
@@ -8055,7 +8125,7 @@ function pwaInstallView() {
   return `<div class="card install-card">
     <div class="card-header">
       <div><h3>Financa na tej napravi</h3><p>${status}</p></div>
-      <span class="sync-badge ${installed ? "success" : "local"}">${installed ? "Nameščeno" : "PWA"}</span>
+      <span class="sync-badge ${installed ? "success" : "local"}">${installed ? "Nameščeno" : "Ni nameščeno"}</span>
     </div>
     <div class="card-body install-card-body">
       <div class="install-icon"><img src="./icons/icon-192.png" alt=""></div>
@@ -8275,7 +8345,7 @@ const MODAL_SUBJECTS = {
   liabilities: "obveznost",
   taxes: "davek",
   goals: "cilj",
-  snapshots: "snapshot",
+  snapshots: "posnetek",
   monthlyNotes: "mesečno opombo",
   categoryRules: "pravilo kategorije",
   budgets: "budget",
@@ -8361,7 +8431,7 @@ function closeMonthModalHtml() {
   return `<div class="modal-backdrop"><form class="modal" data-close-month-form>
     <div class="modal-head"><h3>Zaključi ${monthLabel(month, year)}</h3><button type="button" class="icon-btn" data-action="close">X</button></div>
     <div class="modal-body form-grid">
-      <p class="settings-note full">Shranjeni bodo net worth snapshot, analitične številke, stanje budgetov in komentar. Zaključene analitike se pozneje ne preračunavajo.</p>
+      <p class="settings-note full">Shranjeni bodo posnetek neto vrednosti, analitične številke, stanje budgetov in komentar. Zaključene analitike se pozneje ne preračunavajo.</p>
       ${monthEndCheckHtml(month, year)}
       <label class="full">Kaj je šlo dobro<textarea name="good">${escapeHtml(note.good || "")}</textarea></label>
       <label class="full">Kaj je šlo slabo<textarea name="bad">${escapeHtml(note.bad || "")}</textarea></label>
@@ -8865,10 +8935,29 @@ function bind() {
     dayInput.disabled = !toggle.checked;
     if (toggle.checked) dayInput.focus();
   }));
-  document.querySelectorAll("[data-simple-entry-form]").forEach((form) => form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    saveSimpleEntry(Object.fromEntries(new FormData(form).entries()));
-  }));
+  document.querySelectorAll("[data-simple-entry-form]").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const values = Object.fromEntries(new FormData(form).entries());
+      if (!values.category) {
+        const error = form.querySelector("[data-simple-error]");
+        if (error) error.hidden = false;
+        return;
+      }
+      saveSimpleEntry(values);
+    });
+    const accountSelect = form.querySelector("[data-simple-account]");
+    let accountTouched = false;
+    accountSelect?.addEventListener("change", () => { accountTouched = true; });
+    let accountByCategory = {};
+    try { accountByCategory = JSON.parse(form.dataset.categoryAccounts || "{}"); } catch {}
+    form.querySelectorAll("input[name='category']").forEach((radio) => radio.addEventListener("change", () => {
+      const error = form.querySelector("[data-simple-error]");
+      if (error) error.hidden = true;
+      const usual = accountByCategory[radio.value];
+      if (!accountTouched && accountSelect && usual && [...accountSelect.options].some((item) => item.value === usual)) accountSelect.value = usual;
+    }));
+  });
   document.querySelectorAll("[data-simple-kind]").forEach((btn) => btn.addEventListener("click", () => {
     const amount = btn.closest("form")?.elements?.amount?.value || "";
     modal = { ...modal, item: { kind: btn.dataset.simpleKind, amount } };
@@ -9216,7 +9305,8 @@ function bind() {
     }
   }));
   document.querySelectorAll("[data-action='clear']").forEach((btn) => btn.addEventListener("click", () => {
-    if (!confirm("Res trajno izbrišem vse finančne podatke? Nastavitve videza bodo ostale.")) return;
+    const answer = prompt("To izbriše vse finančne podatke tega profila, tudi v Google Sheets. Za potrditev vpiši IZBRIŠI.");
+    if (String(answer || "").trim().toUpperCase() !== "IZBRIŠI") return;
     createBackup("pred izbrisom vseh podatkov", state);
     state = emptyState({
       theme: state.settings.theme,

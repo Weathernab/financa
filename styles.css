@@ -3088,14 +3088,6 @@ button:disabled {
 }
 
 @media (max-width: 860px) {
-  .add-main span {
-    display: none;
-  }
-
-  .add-main {
-    width: 42px;
-    padding: 0;
-  }
 
   .action-menu {
     right: auto;
@@ -3112,6 +3104,13 @@ button:disabled {
   .settings-tabs::-webkit-scrollbar,
   .section-tabs::-webkit-scrollbar {
     display: none;
+  }
+
+  /* Every tab stays visible on a phone instead of hiding past the edge. */
+  .settings-tabs,
+  .section-tabs {
+    flex-wrap: wrap;
+    overflow: visible;
   }
 
   .budget-grid,
@@ -3986,4 +3985,98 @@ button:disabled {
 
 .import-confirmed-warning .button {
   justify-self: start;
+}
+
+.cloud-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: auto;
+  padding: 0 16px 0 12px;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.metric-icon {
+  color: var(--text);
+}
+
+.metric-icon svg,
+.profile-head-actions .button svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sync-badge {
+  white-space: nowrap;
+}
+
+label.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: inherit;
+}
+
+.profile-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.profile-head-actions .button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.danger-zone {
+  margin-top: 18px;
+  border-color: color-mix(in srgb, var(--negative) 35%, var(--line));
+}
+
+.simple-account {
+  margin-top: 4px;
+}
+
+.simple-error {
+  margin: 0;
+  color: var(--negative);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.simple-waiting {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px dashed var(--line);
+}
+
+.simple-waiting-head {
+  display: grid;
+  gap: 2px;
+}
+
+.simple-waiting-head small {
+  color: var(--muted);
+}
+
+.simple-row.waiting {
+  flex-wrap: wrap;
+  opacity: 0.92;
+}
+
+.simple-waiting-pick {
+  grid-column: 1 / -1;
+  flex-basis: 100%;
+  width: 100%;
 }
