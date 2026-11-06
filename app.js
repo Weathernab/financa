@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "113";
+const APP_VERSION = "114";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -3850,11 +3850,13 @@ function rowActionMenu(collection, id, { allowRule = false, allowDuplicate = fal
   const key = `${collection}:${id}`;
   const linkIncomeId = rowMenuOpen === key ? reimbursementIncomeForRow(collection, id) : "";
   const sharedExpenseId = rowMenuOpen === key ? sharedExpenseIdForRow(collection, id) : "";
+  const paybackExpenseId = rowMenuOpen === key ? paybackExpenseIdForRow(collection, id) : "";
   return `<div class="row-menu-wrap">
     <button class="icon-btn row-menu-trigger" type="button" title="Več možnosti" aria-label="Več možnosti" data-row-menu="${escapeAttr(key)}">${icon("more")}</button>
     ${rowMenuOpen === key ? `<div class="row-menu">
       <button type="button" data-edit="${escapeAttr(key)}">Uredi</button>
       ${linkIncomeId ? `<button type="button" data-link-reimbursement="${escapeAttr(linkIncomeId)}">Poveži z računom</button>` : ""}
+      ${paybackExpenseId ? `<button type="button" data-expense-paybacks="${escapeAttr(paybackExpenseId)}">Poveži z vračilom</button>` : ""}
       ${sharedExpenseId ? `<button type="button" data-shared-expense="${escapeAttr(sharedExpenseId)}">Deljen račun (čakam vračilo)</button>` : ""}
       ${allowDuplicate ? `<button type="button" data-duplicate-transaction="${escapeAttr(id)}">Podvoji</button>` : ""}
       ${allowRecurring ? `<button type="button" data-recurring-from-transaction="${escapeAttr(id)}">Nastavi kot ponavljajoče</button>` : ""}
@@ -4115,6 +4117,114 @@ function rejectReimbursement() {
     refreshClosedMonthsAfterCorrection(closedPeriodsForDates([entry.tx.date]), `Nakazilo "${entry.tx.description || "prihodek"}" ni vračilo`);
   }
   advanceReimbursementDialog();
+}
+
+// ---- The other direction: from a bill, choose the paybacks that cover it ----
+
+// Salary-like incomes are never a friend paying back.
+const PAYBACK_IGNORED_INCOME_CATEGORIES = new Set(["plača", "regres", "nadure", "študentsko delo", "dividende", "obresti", "interni transfer"]);
+
+function canLinkPaybacks(expense) {
+  return Boolean(expense) && Math.abs(Number(expense.amount || 0)) > 0 && !REIMBURSEMENT_IGNORED_EXPENSE_CATEGORIES.has(expense.category);
+}
+
+function paybackExpenseIdForRow(collection, id) {
+  const expenseId = sharedExpenseIdForRow(collection, id);
+  return canLinkPaybacks((state.expenses || []).find((expense) => expense.id === expenseId)) ? expenseId : "";
+}
+
+// Incomes (and paybacks still in review) that could pay back this bill: linked ones first, then
+// paybacks without a bill, then transfers from people, each group by how close in time.
+function expensePaybackChoices(expense, limit = 40) {
+  const from = shiftIsoDate(expense.date, -REIMBURSEMENT_DAYS_BEFORE);
+  const to = shiftIsoDate(expense.date, REIMBURSEMENT_DAYS_AFTER);
+  const expensesById = new Map((state.expenses || []).map((item) => [item.id, item]));
+  const incomes = (state.incomes || [])
+    .filter((income) =>
+      income.reimbursedExpenseId === expense.id
+      || (income.date >= from && income.date <= to && Number(income.amount || 0) > 0 && !PAYBACK_IGNORED_INCOME_CATEGORIES.has(income.category))
+    )
+    .map((income) => {
+      const reimbursement = isReimbursementIncome(income);
+      const linkedHere = reimbursement && income.reimbursedExpenseId === expense.id;
+      const otherBill = reimbursement && !linkedHere && income.reimbursedExpenseId ? expensesById.get(income.reimbursedExpenseId) : null;
+      const personTransfer = isPersonTransferText(income.originalDescription || income.name || "", "transfer");
+      const rank = linkedHere ? 0 : reimbursement && !otherBill ? 1 : personTransfer || reimbursement ? 2 : 3;
+      return { kind: "income", id: income.id, date: income.date, name: income.name, amount: Math.abs(Number(income.amount || 0)), category: income.category, linkedHere, otherBill, rank, days: daysBetween(expense.date, income.date) };
+    });
+  const pending = reviewReimbursements()
+    .filter((tx) => !tx.linkedIncomeId && tx.date >= from && tx.date <= to)
+    .map((tx) => ({ kind: "tx", id: tx.id, date: tx.date, name: tx.description, amount: Math.abs(Number(tx.amount || 0)), category: "za pregled", linkedHere: false, otherBill: null, rank: 1, days: daysBetween(expense.date, tx.date) }));
+  return [...incomes, ...pending]
+    .sort((a, b) => a.rank - b.rank || Math.abs(a.days) - Math.abs(b.days) || String(b.date).localeCompare(String(a.date)))
+    .slice(0, limit);
+}
+
+function openExpensePaybacksDialog(expenseId) {
+  const expense = (state.expenses || []).find((item) => item.id === expenseId);
+  if (!canLinkPaybacks(expense)) return;
+  modal = { collection: "expensePaybacks", title: "Poveži vračila", item: { id: expense.id } };
+  rowMenuOpen = "";
+  render();
+}
+
+function expensePaybacksModalHtml() {
+  const expense = (state.expenses || []).find((item) => item.id === modal.item?.id);
+  if (!expense) return "";
+  const total = Math.abs(Number(expense.amount || 0));
+  const received = reimbursedAmount(expense.id);
+  const choices = expensePaybackChoices(expense);
+  const choiceHtml = (choice) => `<label class="reimbursement-choice${choice.linkedHere ? " suggested" : ""}" data-reimbursement-choice="${escapeAttr(normalizeText(`${choice.name} ${choice.category}`))}">
+      <input type="checkbox" name="payback" value="${escapeAttr(`${choice.kind}:${choice.id}`)}" ${choice.linkedHere ? "checked" : ""}>
+      <span><strong>${escapeHtml(choice.name || "prihodek")}</strong><small>${escapeHtml(choice.date)} · ${dayCountLabel(-choice.days)} · ${escapeHtml(choice.category || "")}${choice.otherBill ? ` · zdaj pri računu ${escapeHtml(choice.otherBill.name || "strošek")}` : ""}</small></span>
+      <b class="positive">+${money(choice.amount)}</b>${choice.linkedHere ? `<em>povezano</em>` : ""}
+    </label>`;
+  return `<div class="modal-backdrop">
+    <form class="modal reimbursement-dialog" data-expense-paybacks-form>
+      <div class="modal-head"><h3>Poveži vračila</h3><button type="button" class="icon-btn" data-action="close">X</button></div>
+      <div class="modal-body">
+        <div class="payback-summary"><strong>${escapeHtml(expense.name || "strošek")}</strong><span>${escapeHtml(expense.date)} · <b class="negative">${money(-total)}</b>${received ? ` · vrnjeno ${money(received)}` : ""}</span></div>
+        <p class="settings-note">Označi prihodke, s katerimi so ti ta račun (delno) vrnili - lahko jih je več, npr. od vsakega prijatelja posebej. Izbrani prihodki se ne štejejo več med prihodke, ampak zmanjšajo ta strošek.</p>
+        <input type="search" placeholder="Išči prihodek" data-reimbursement-search aria-label="Išči prihodek">
+        <div class="reimbursement-choices">
+          ${choices.length ? choices.map(choiceHtml).join("") : `<div class="empty">V 60 dneh pred ali po računu ni prihodkov, ki bi lahko bili vračilo.</div>`}
+        </div>
+      </div>
+      <div class="modal-foot"><button type="button" class="button secondary" data-action="close">Prekliči</button><button class="button" type="submit">Shrani</button></div>
+    </form>
+  </div>`;
+}
+
+// selected: ["income:<id>", "tx:<id>"]. Unticking a linked payback keeps it a payback, without a bill.
+function saveExpensePaybacks(selected) {
+  const expense = (state.expenses || []).find((item) => item.id === modal?.item?.id);
+  if (!expense) return closeModal();
+  const chosen = new Set(selected || []);
+  const dates = [expense.date];
+  for (const income of (state.incomes || []).filter((item) => isReimbursementIncome(item) && item.reimbursedExpenseId === expense.id)) {
+    if (chosen.has(`income:${income.id}`)) continue;
+    upsertIncome({ ...income, reimbursedExpenseId: "", reimbursementCategory: expense.category || "drugo" }, true, { silent: true });
+    dates.push(income.date);
+  }
+  for (const key of chosen) {
+    const [kind, ...rest] = String(key).split(":");
+    const id = rest.join(":");
+    let income = null;
+    if (kind === "tx") {
+      const tx = (state.transactions || []).find((item) => item.id === id);
+      if (!tx || Number(tx.amount) <= 0) continue;
+      const saved = upsertTransaction({ id: tx.id, category: REIMBURSEMENT_CATEGORY, type: "prihodek" });
+      income = (state.incomes || []).find((item) => item.id === saved.linkedIncomeId);
+    } else {
+      income = (state.incomes || []).find((item) => item.id === id);
+    }
+    if (!income || (isReimbursementIncome(income) && income.reimbursedExpenseId === expense.id)) continue;
+    dates.push(income.date, ...reimbursementReportingDates(income));
+    upsertIncome({ ...income, category: REIMBURSEMENT_CATEGORY, notReimbursement: false, reimbursedExpenseId: expense.id, reimbursementCategory: expense.category || "drugo" }, true, { silent: true });
+  }
+  refreshClosedMonthsAfterCorrection(closedPeriodsForDates(dates), `Vračila za račun "${expense.name || "strošek"}"`);
+  save();
+  closeModal();
 }
 
 function reviewTransactions() {
@@ -4656,10 +4766,10 @@ function openPaybacksCard() {
       return `<div class="unusual-row">
       <div><strong>${escapeHtml(item.expense.name || "strošek")}</strong><small>${escapeHtml(item.expense.date)} · račun ${money(Math.abs(Number(item.expense.amount || 0)))} · vrnjeno ${money(item.received)} od ${money(item.expected)}${waiting.length ? ` · čakaš: ${escapeHtml(waiting.join(", "))}` : ""}</small></div>
       <strong class="warning">${money(item.missing)}</strong>
-      <div class="unusual-actions"><button class="button secondary" type="button" data-shared-expense="${escapeAttr(item.expense.id)}">Uredi</button><button class="button secondary" type="button" data-shared-settle="${escapeAttr(item.expense.id)}">Poravnano</button></div>
+      <div class="unusual-actions"><button class="button secondary" type="button" data-expense-paybacks="${escapeAttr(item.expense.id)}">Poveži vračilo</button><button class="button secondary" type="button" data-shared-expense="${escapeAttr(item.expense.id)}">Uredi</button><button class="button secondary" type="button" data-shared-settle="${escapeAttr(item.expense.id)}">Poravnano</button></div>
     </div>`;
     }).join("")}</div>
-    <p class="analysis-note">Vračila povežeš z računom kot doslej. Ko je vrnjeno vse, račun izgine s seznama. "Poravnano" uporabi, če so ti vrnili drugače (npr. z gotovino).</p>
+    <p class="analysis-note">Vračilo povežeš z gumbom "Poveži vračilo" ali pri prihodku (⋯ → Poveži z računom). Ko je vrnjeno vse, račun izgine s seznama. "Poravnano" uporabi, če so ti vrnili drugače (npr. z gotovino).</p>
   </div></section>`;
 }
 
@@ -8090,6 +8200,7 @@ function modalHtml() {
   if (modal.collection === "quickEntry") return isSimpleMode() ? simpleEntryModalHtml() : quickEntryModalHtml();
   if (modal.collection === "linkReimbursement") return reimbursementDialogHtml();
   if (modal.collection === "sharedExpense") return sharedExpenseModalHtml();
+  if (modal.collection === "expensePaybacks") return expensePaybacksModalHtml();
   const current = modal.item || defaults(modal.collection);
   return `<div class="modal-backdrop">
     <form class="modal" data-form="${modal.collection}">
@@ -8862,6 +8973,17 @@ function bind() {
     setActive("monthly");
   }));
   document.querySelectorAll("[data-shared-expense]").forEach((btn) => btn.addEventListener("click", () => openSharedExpenseModal(btn.dataset.sharedExpense)));
+  document.querySelectorAll("[data-expense-paybacks]").forEach((btn) => btn.addEventListener("click", () => openExpensePaybacksDialog(btn.dataset.expensePaybacks)));
+  document.querySelectorAll("[data-expense-paybacks-form]").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      saveExpensePaybacks(new FormData(form).getAll("payback"));
+    });
+    form.querySelector("[data-reimbursement-search]")?.addEventListener("input", (event) => {
+      const query = normalizeText(event.target.value).trim();
+      form.querySelectorAll("[data-reimbursement-choice]").forEach((row) => { row.hidden = Boolean(query) && !row.dataset.reimbursementChoice.includes(query); });
+    });
+  });
   document.querySelectorAll("[data-shared-settle]").forEach((btn) => btn.addEventListener("click", () => settleSharedExpense(btn.dataset.sharedSettle)));
   document.querySelectorAll("[data-shared-expense-form]").forEach((form) => {
     form.addEventListener("submit", (event) => {

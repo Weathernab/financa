@@ -2336,6 +2336,15 @@ button:disabled {
 .reimbursement-choice input[type="radio"] {
   appearance: auto;
   -webkit-appearance: radio;
+}
+
+.reimbursement-choice input[type="checkbox"] {
+  -webkit-appearance: checkbox;
+}
+
+.reimbursement-choice input[type="radio"],
+.reimbursement-choice input[type="checkbox"] {
+  appearance: auto;
   width: 20px;
   height: 20px;
   min-height: 20px;
