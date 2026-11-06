@@ -3973,3 +3973,17 @@ button:disabled {
     animation: none;
   }
 }
+
+.import-confirmed-warning {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.import-confirmed-warning p {
+  margin: 0;
+}
+
+.import-confirmed-warning .button {
+  justify-self: start;
+}

@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "117";
+const APP_VERSION = "118";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -18,7 +18,7 @@ const pad = (value) => String(value).padStart(2, "0");
 const iso = (year, month, day) => `${year}-${pad(month)}-${pad(day)}`;
 
 const incomeCategories = ["plača", "regres", "nadure", "študentsko delo", "povračilo stroškov", "vračilo deljenega stroška", "prodaja stvari", "dividende", "obresti", "prihodki", "interni transfer", "za pregled", "drugo"];
-const expenseCategories = ["stanovanje", "hrana", "gorivo", "avto", "zavarovanja", "telefon", "šport", "oblačila", "kozmetika", "študij", "prosti čas", "naročnine", "restavracije/kava", "potovanja", "darila", "zdravje", "orodje/oprema", "davki", "gotovina", "investicije", "spletni nakupi", "bančni stroški", "interni transfer", "za pregled", "drugo"];
+const expenseCategories = ["stanovanje", "hrana", "gorivo", "avto", "zavarovanja", "telefon", "šport", "oblačila", "kozmetika", "študij", "prosti čas", "naročnine", "restavracije/kava", "potovanja", "darila", "zdravje", "orodje/oprema", "davki", "gotovina", "investicije", "spletni nakupi", "bančni stroški", "plačano za druge", "interni transfer", "za pregled", "drugo"];
 const expenseCategoryGroups = ["Bivanje", "Hrana", "Transport", "Zdravje in zavarovanja", "Življenjski slog", "Finance in davki", "Nakupi in oprema", "Izobraževanje", "Transferji", "Drugo / za pregled"];
 const expenseCategoryGroupMap = {
   stanovanje: "Bivanje",
@@ -44,6 +44,7 @@ const expenseCategoryGroupMap = {
   "spletni nakupi": "Nakupi in oprema",
   gotovina: "Transferji",
   "interni transfer": "Transferji",
+  "plačano za druge": "Transferji",
   transfer: "Transferji",
   "za pregled": "Drugo / za pregled",
   drugo: "Drugo / za pregled",
@@ -2277,7 +2278,17 @@ function monthLabel(month, year) {
 // money really moved); only reporting nets the reimbursement against the expense it covers.
 const REIMBURSEMENT_CATEGORY = "vračilo deljenega stroška";
 const REIMBURSEMENT_IGNORED_EXPENSE_CATEGORIES = new Set(["interni transfer", "za pregled", "investicije"]);
-const SHARED_EXPENSE_CATEGORIES = new Set(["restavracije/kava", "potovanja", "prosti čas", "hrana", "darila", "šport", "gorivo"]);
+const SHARED_EXPENSE_CATEGORIES = new Set(["restavracije/kava", "potovanja", "prosti čas", "hrana", "darila", "šport", "gorivo", "plačano za druge"]);
+
+// Money you paid on someone else's behalf (e.g. #withPAY): it leaves the account but is not your
+// spending. It stays in the ledger and balances, and is left out of every analysis, together with
+// the paybacks linked to it.
+const PAID_FOR_OTHERS = "plačano za druge";
+const NOT_MY_EXPENSE_CATEGORIES = new Set([PAID_FOR_OTHERS]);
+
+function isNotMyExpense(expense) {
+  return NOT_MY_EXPENSE_CATEGORIES.has(expense?.category);
+}
 
 const REIMBURSEMENT_DAYS_BEFORE = 60;
 const REIMBURSEMENT_DAYS_AFTER = 60;
@@ -2339,12 +2350,12 @@ function netExpenseAmount(expense, allocations = reimbursementAllocations()) {
 // Expenses as they count for analytics: each reduced by what friends paid back, plus offset rows.
 function reportingExpenses(month, year, allocations = reimbursementAllocations()) {
   const rows = (state.expenses || [])
-    .filter((item) => sameMonth(item, "date", month, year))
+    .filter((item) => sameMonth(item, "date", month, year) && !isNotMyExpense(item))
     .map((expense) => {
       const reimbursed = reimbursedAmount(expense.id, allocations);
       return reimbursed ? { ...expense, amount: netExpenseAmount(expense, allocations), grossAmount: expense.amount, reimbursedAmount: reimbursed } : expense;
     });
-  return [...rows, ...allocations.offsets.filter((item) => sameMonth(item, "date", month, year))];
+  return [...rows, ...allocations.offsets.filter((item) => sameMonth(item, "date", month, year) && !isNotMyExpense(item))];
 }
 
 function reportingIncomes(month, year) {
@@ -4226,7 +4237,7 @@ function reviewTransactions() {
   return (state.transactions || []).filter((tx) => tx.status === "za pregled" || tx.confidence === "low").sort((a, b) => new Date(b.date) - new Date(a.date));
 }
 
-const UNUSUAL_EXPENSE_IGNORED_CATEGORIES = new Set(["interni transfer", "za pregled", "investicije"]);
+const UNUSUAL_EXPENSE_IGNORED_CATEGORIES = new Set(["interni transfer", "za pregled", "investicije", "plačano za druge"]);
 
 function shiftIsoDate(dateString, days) {
   const date = new Date(`${dateString}T00:00:00`);
@@ -4277,7 +4288,7 @@ function unusualExpenses(today = iso(currentYear, currentMonth, now.getDate())) 
     .sort((a, b) => b.expense.date.localeCompare(a.expense.date));
 }
 
-const SUBSCRIPTION_IGNORED_CATEGORIES = new Set(["interni transfer", "za pregled", "investicije", "gotovina"]);
+const SUBSCRIPTION_IGNORED_CATEGORIES = new Set(["interni transfer", "za pregled", "investicije", "gotovina", "plačano za druge"]);
 
 function subscriptionMerchantKey(name) {
   return normalizeText(name)
@@ -4855,7 +4866,7 @@ function billExpectsPayer(expense, payer, allocations) {
 // ---- Analysis: merchants, own baseline, savings goal ----
 
 // Rent, taxes and insurance are one bill per month, not places you choose to visit.
-const MERCHANT_IGNORED_CATEGORIES = new Set(["interni transfer", "za pregled", "investicije", "gotovina", "stanovanje", "davki", "zavarovanja"]);
+const MERCHANT_IGNORED_CATEGORIES = new Set(["interni transfer", "za pregled", "investicije", "gotovina", "stanovanje", "davki", "zavarovanja", "plačano za druge"]);
 const DISCRETIONARY_CATEGORIES = new Set(["restavracije/kava", "prosti čas", "naročnine", "oblačila", "potovanja", "spletni nakupi", "kozmetika", "šport", "darila"]);
 
 function merchantLabel(name) {
@@ -4922,7 +4933,7 @@ function merchantStatsHtml() {
 }
 
 const OWN_BASELINE_MIN_MONTHS = 4;
-const OWN_BASELINE_IGNORED_CATEGORIES = new Set(["interni transfer", "za pregled", "investicije", "stanovanje", "davki", "zavarovanja"]);
+const OWN_BASELINE_IGNORED_CATEGORIES = new Set(["interni transfer", "za pregled", "investicije", "stanovanje", "davki", "zavarovanja", "plačano za druge"]);
 
 // Categories where the last three closed months are clearly above your usual level (median of up to six months).
 function ownBaselineSuggestions(months = completedActivityMonths(6)) {
@@ -5900,7 +5911,7 @@ function analyticsExpenseSample(months) {
   return selected.flatMap(([month, year]) => reportingExpenses(month, year, allocations));
 }
 
-const REVOLUT_BUDGET_IGNORED_CATEGORIES = new Set(["interni transfer", "investicije", "gotovina", "za pregled"]);
+const REVOLUT_BUDGET_IGNORED_CATEGORIES = new Set(["interni transfer", "investicije", "gotovina", "za pregled", "plačano za druge"]);
 
 function isPaidFromAccount(expense, account) {
   if (expense.balanceAccountId) return expense.balanceAccountId === account.id;
@@ -6042,6 +6053,7 @@ function importsView() {
     ? `<div class="card import-preview-card full-span">
         <div class="card-header"><h3>Predogled pred uvozom</h3>${importDraftActions()}</div>
         <div class="card-body">
+          ${confirmedBalanceWarningHtml()}
           ${importPreviewFilters()}
           <div class="table-wrap">${importPreviewTable()}</div>
         </div>
@@ -6161,6 +6173,31 @@ function debtSetupValue(key, label, category) {
   return byName?.amount || 0;
 }
 
+// Setup keys of accounts whose balance comes from entries (not a market value like IBKR).
+const LEDGER_SETUP_KEYS = new Set(["banka", "revolut", "gotovina", "varcevalni"]);
+
+function balanceAdjustmentEntry(account, date, difference, { description, subcategory, source, note }) {
+  return {
+    id: crypto.randomUUID(),
+    date,
+    description,
+    amount: difference,
+    currency: "EUR",
+    category: "interni transfer",
+    categoryGroup: categoryGroupFor("interni transfer"),
+    subcategory,
+    account: account.name,
+    type: "uskladitev",
+    status: "uskladitev",
+    source,
+    confidence: "manual",
+    note,
+    balanceAdjustment: true,
+    adjustmentAccountId: account.id,
+    balanceImpact: difference,
+  };
+}
+
 function saveSetupMode(form) {
   const formData = new FormData(form);
   const firstSetup = !state.settings.setupCompleted;
@@ -6186,6 +6223,8 @@ function saveSetupMode(form) {
     amount: Number(row.querySelector("[data-vehicle-value]")?.value || 0),
   })).filter((row) => row.name && row.amount > 0);
   const previousAccountsByKey = new Map((state.accounts || []).map((item) => [canonicalAssetKey(item), item]));
+  const setupDate = iso(currentYear, currentMonth, now.getDate());
+  const setupAdjustments = [];
   const previousLiabilitiesByKey = new Map((state.liabilities || []).map((item) => [canonicalDebtKey(item), item]));
   if (replaceSetup) {
     const assetKeys = new Set(setupAssets.map(([key]) => key));
@@ -6210,9 +6249,21 @@ function saveSetupMode(form) {
       setupKey: asset.key,
       updatedAt: new Date().toISOString(),
     };
+    // A new balance for an account that already has entries is recorded as a visible adjustment
+    // dated today, so earlier months keep their balances and the change can be undone.
+    const difference = roundCents(asset.amount - Number(existing?.balance || 0));
+    if (!firstSetup && existing && LEDGER_SETUP_KEYS.has(asset.key) && Math.abs(difference) >= 0.01) {
+      setupAdjustments.push(balanceAdjustmentEntry(row, setupDate, difference, {
+        description: `Uskladitev stanja iz nastavitve (${row.name})`,
+        subcategory: "uskladitev iz nastavitve",
+        source: "Nastavitev stanj",
+        note: `Vpisano stanje ${money(asset.amount)}, prej v aplikaciji ${money(Number(existing.balance || 0))}.`,
+      }));
+    }
     const stillInAccounts = existing && state.accounts.some((item) => item.id === existing.id);
     state.accounts = stillInAccounts ? state.accounts.map((item) => (item.id === existing.id ? row : item)) : [row, ...state.accounts];
   }
+  if (setupAdjustments.length) state.transactions = [...setupAdjustments, ...(state.transactions || [])];
   for (const debt of debtRows) {
     if (debt.amount <= 0) continue;
     const existing = previousLiabilitiesByKey.get(debt.key);
@@ -6261,9 +6312,13 @@ function saveSetupMode(form) {
   };
   state.snapshots = [snapshot, ...state.snapshots.filter((item) => !(Number(item.month) === month && Number(item.year) === year && String(item.note || "").includes("setup")))];
   state.settings.setupCompleted = true;
+  refreshClosedMonthsAfterCorrection(setupAdjustments.length ? closedPeriodsForDates([setupDate]) : [], "Uskladitev stanja iz nastavitve");
   save();
   active = firstSetup ? "dashboard" : "networth";
   render();
+  if (setupAdjustments.length) {
+    alert(`Spremenjena stanja so zapisana kot uskladitve z današnjim datumom (vidiš jih med transakcijami):\n${setupAdjustments.map((item) => `${item.account}: ${signed(item.amount)}`).join("\n")}`);
+  }
 }
 
 function importMappingHtml() {
@@ -6334,6 +6389,49 @@ function importDraftActions() {
     ${duplicates ? `<button class="button secondary" data-action="remove-import-duplicates">Izbriši ${duplicates} dvojnikov</button>` : ""}
     <button class="button" data-action="confirm-import" ${ready ? "" : "disabled"}>Uvozi ${ready} transakcij</button>
   </div>`;
+}
+
+// The latest date an account's balance was set or confirmed (setup, month-end check, statement).
+function balanceConfirmedThrough(account) {
+  return (state.transactions || [])
+    .filter((tx) => tx.balanceAdjustment && tx.adjustmentAccountId === account.id && tx.date)
+    .reduce((latest, tx) => (tx.date > latest ? tx.date : latest), "");
+}
+
+// New rows dated on or before that date would change a balance that was already right.
+function rowsBeforeConfirmedBalance() {
+  if (!importDraft) return [];
+  const groups = new Map();
+  for (const tx of importDraft.transactions || []) {
+    if (["možen dvojnik", "preklicano"].includes(tx.status) || tx.pocket === "paired") continue;
+    const account = findExpenseAccount(tx.account);
+    if (!account) continue;
+    const through = balanceConfirmedThrough(account);
+    if (!through || tx.date > through) continue;
+    const group = groups.get(account.id) || { account, through, rows: [] };
+    group.rows.push(tx);
+    groups.set(account.id, group);
+  }
+  return [...groups.values()];
+}
+
+function confirmedBalanceWarningHtml() {
+  const groups = rowsBeforeConfirmedBalance();
+  if (!groups.length) return "";
+  return `<div class="notice warning import-confirmed-warning">${groups.map(({ account, through, rows }) => {
+    const total = roundCents(rows.reduce((sum, tx) => sum + Number(tx.amount || 0), 0));
+    return `<p><strong>${rows.length} ${rows.length === 1 ? "vrstica je" : rows.length === 2 ? "vrstici sta" : rows.length < 5 ? "vrstice so" : "vrstic je"} z datumom do ${escapeHtml(shortDate(through))}</strong> (${signed(total)}) na računu ${escapeHtml(account.name)}. Stanje tega računa je bilo do tega dne že usklajeno, zato bi ga uvoz spremenil. Uvozi samo, če res manjkajo in stanje ob uskladitvi ni bilo pravilno.</p>`;
+  }).join("")}<button class="button secondary" type="button" data-action="skip-confirmed-rows">Ne uvozi teh vrstic</button></div>`;
+}
+
+function skipRowsBeforeConfirmedBalance() {
+  const skip = new Set(rowsBeforeConfirmedBalance().flatMap((group) => group.rows.map((tx) => tx.index)));
+  if (!skip.size) return;
+  importDraft.rows = importDraft.rows.filter((_, index) => !skip.has(index));
+  importDraft.transactions = [];
+  rebuildImportDraft();
+  importFilter = "all";
+  render();
 }
 
 function importPreviewFilters() {
@@ -8770,6 +8868,7 @@ function bind() {
     modal = { ...modal, item: { kind: btn.dataset.simpleKind, amount } };
     render();
   }));
+  document.querySelectorAll("[data-action='skip-confirmed-rows']").forEach((btn) => btn.addEventListener("click", skipRowsBeforeConfirmedBalance));
   document.querySelectorAll("[data-simple-month]").forEach((btn) => btn.addEventListener("click", () => shiftFilterMonth(Number(btn.dataset.simpleMonth))));
   document.querySelectorAll("[data-month-today]").forEach((btn) => btn.addEventListener("click", () => {
     filters.month = currentMonth;
