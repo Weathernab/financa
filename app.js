@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "115";
+const APP_VERSION = "116";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -3517,8 +3517,8 @@ function render() {
     portaledRowMenu.remove();
     portaledRowMenu = null;
   }
-  const previousSidebar = document.querySelector(".sidebar");
-  if (previousSidebar) mobileNavScrollLeft = previousSidebar.scrollLeft;
+  const previousNav = document.querySelector(".sidebar .nav");
+  if (previousNav) mobileNavScrollLeft = previousNav.scrollLeft;
   if (!currentProfile) {
     document.getElementById("app").innerHTML = loginView();
     bind();
@@ -3584,16 +3584,17 @@ function render() {
   `;
   bind();
   const currentSidebar = document.querySelector(".sidebar");
-  if (currentSidebar) {
+  const currentNav = currentSidebar?.querySelector(".nav");
+  if (currentSidebar && currentNav) {
     const updateNavEdge = () => {
-      const atEnd = currentSidebar.scrollWidth - currentSidebar.clientWidth - currentSidebar.scrollLeft < 4;
+      const atEnd = currentNav.scrollWidth - currentNav.clientWidth - currentNav.scrollLeft < 4;
       currentSidebar.classList.toggle("nav-at-end", atEnd);
     };
     requestAnimationFrame(() => {
-      currentSidebar.scrollLeft = mobileNavScrollLeft;
+      currentNav.scrollLeft = mobileNavScrollLeft;
       updateNavEdge();
     });
-    currentSidebar.addEventListener("scroll", updateNavEdge, { passive: true });
+    currentNav.addEventListener("scroll", updateNavEdge, { passive: true });
   }
   if (rowMenuOpen) {
     const trigger = document.querySelector(`[data-row-menu="${rowMenuOpen}"]`);
@@ -3712,15 +3713,16 @@ function dashboardView() {
     ? "primerjava bo na voljo po naslednjem snapshotu"
     : `${signed(data.netWorthChange)} od prejšnjega meseca`;
   const metrics = [
-    ["Prihodki", data.incomeTotal, "tekoči mesec", "positive"],
-    ["Stroški", data.expenseTotal, "tekoči mesec", "negative"],
+    ["Prihodki", data.incomeTotal, monthLabel(filters.month, filters.year), "positive"],
+    ["Stroški", data.expenseTotal, monthLabel(filters.month, filters.year), "negative"],
     ["Prihranek", data.saved, `${NUMBER.format(data.savingsRate)} % plače`, data.saved >= 0 ? "positive" : "negative"],
-    ["Investirano", data.invested, "dodano ta mesec", "positive"],
+    ["Investirano", data.invested, "dodano v mesecu", "positive"],
     ["Net worth", data.netWorth, netWorthHint, data.netWorthChange === null || data.netWorthChange >= 0 ? "positive" : "negative"],
     ["Obveznosti", data.liabilities, `${reviewCount} transakcij za pregled`, "warning"],
   ];
   return `
     ${dataHealthDashboardNotice()}
+    <div class="card month-bar"><div class="card-body filter-bar">${simpleMonthNav()}</div></div>
     <section class="grid metrics">${metrics.map(metricCard).join("")}</section>
     <section class="dashboard-charts" style="margin-top:14px">
       <div class="card dashboard-link" data-nav="networth">
@@ -8661,10 +8663,10 @@ async function forceSyncProfiles() {
 }
 
 function bind() {
-  const mobileSidebar = document.querySelector(".sidebar");
-  if (mobileSidebar) {
-    mobileSidebar.addEventListener("scroll", () => {
-      mobileNavScrollLeft = mobileSidebar.scrollLeft;
+  const mobileNav = document.querySelector(".sidebar .nav");
+  if (mobileNav) {
+    mobileNav.addEventListener("scroll", () => {
+      mobileNavScrollLeft = mobileNav.scrollLeft;
     }, { passive: true });
   }
   document.querySelectorAll("[data-login-form]").forEach((form) => form.addEventListener("submit", async (event) => {

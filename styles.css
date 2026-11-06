@@ -3180,31 +3180,23 @@ button:disabled {
     bottom: 0;
     left: 0;
     height: calc(72px + env(safe-area-inset-bottom));
-    padding: 8px max(10px, env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+    padding: 8px 0 env(safe-area-inset-bottom);
     border-top: 1px solid var(--line-strong);
     border-bottom: 0;
     border-right: 0;
-    overflow-x: auto;
-    overflow-y: hidden;
+    overflow: hidden;
     background: linear-gradient(180deg, rgba(8, 13, 20, 0.94), rgba(12, 19, 29, 0.99));
     box-shadow: 0 -16px 34px rgba(0, 0, 0, 0.28);
     backdrop-filter: blur(22px);
-    overscroll-behavior-x: contain;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-  }
-
-  .sidebar::-webkit-scrollbar {
-    display: none;
   }
 
   .sidebar::after {
     content: "";
-    position: fixed;
+    position: absolute;
+    top: 0;
     right: 0;
     bottom: 0;
     width: 28px;
-    height: calc(72px + env(safe-area-inset-bottom));
     background: linear-gradient(to right, transparent, rgba(8, 13, 20, 0.92));
     pointer-events: none;
     z-index: 101;
@@ -3222,12 +3214,23 @@ button:disabled {
     display: none;
   }
 
+  /* Only the buttons scroll. A scrolling element with a blurred background is drawn with
+     a visible seam on iPhone, so the blur stays on the still .sidebar. */
   .nav {
     display: flex;
-    width: max-content;
-    min-width: 100%;
+    width: 100%;
     gap: 7px;
+    padding: 0 max(10px, env(safe-area-inset-right)) 10px max(10px, env(safe-area-inset-left));
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
     scroll-snap-type: x proximity;
+  }
+
+  .nav::-webkit-scrollbar {
+    display: none;
   }
 
   .nav-group {
@@ -3244,6 +3247,7 @@ button:disabled {
     flex-direction: column;
     justify-content: center;
     gap: 4px;
+    flex: 0 0 78px;
     width: 78px;
     min-height: 54px;
     padding: 6px 5px;
@@ -3672,7 +3676,8 @@ button:disabled {
 
 .month-nav-today {
   min-height: 32px;
-  padding: 4px 12px;
+  padding: 4px 10px;
+  white-space: nowrap;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: none;
@@ -3680,6 +3685,10 @@ button:disabled {
   font-size: 12px;
   font-weight: 800;
   cursor: pointer;
+}
+
+.month-bar {
+  margin-bottom: 14px;
 }
 
 .filter-bar {
@@ -3703,6 +3712,11 @@ button:disabled {
 @media (max-width: 720px) {
   .filter-bar .simple-month-nav {
     justify-content: center;
+    gap: 10px;
+  }
+
+  .filter-bar .simple-month-nav strong {
+    min-width: 0;
   }
 }
 
