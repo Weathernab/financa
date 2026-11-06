@@ -3670,6 +3670,42 @@ button:disabled {
   opacity: 0.35;
 }
 
+.month-nav-today {
+  min-height: 32px;
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: none;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 14px 24px;
+}
+
+.filter-bar .simple-month-nav {
+  flex: 1 1 260px;
+  align-self: center;
+  justify-content: flex-start;
+}
+
+.filter-bar .filters {
+  flex: 2 1 320px;
+  grid-template-columns: repeat(2, minmax(140px, 1fr));
+}
+
+@media (max-width: 720px) {
+  .filter-bar .simple-month-nav {
+    justify-content: center;
+  }
+}
+
 .simple-totals {
   display: flex;
   flex-wrap: wrap;

@@ -8,7 +8,7 @@ const PROFILE_DATA_PREFIX = `${STORAGE_KEY}:profil:`;
 const BACKEND_CONFIG_KEY = "financa-google-backend-v1";
 const BACKUP_STORAGE_PREFIX = "financa-varnostne-kopije-v1:";
 const DEFAULT_CLOUD_ENDPOINT = "";
-const APP_VERSION = "114";
+const APP_VERSION = "115";
 const DATA_SCHEMA_VERSION = 3;
 
 const now = new Date();
@@ -3765,20 +3765,13 @@ function upcomingHtml() {
   return `<div class="notice">${items.map((item) => `<div class="notice-item"><strong>${item.name}</strong><br><span>${money(item.amount)} do ${item.dueDate}</span><br><span class="pill">${item.category}</span></div>`).join("")}</div>`;
 }
 
-function monthOptionsHtml(selectedMonth) {
-  return Array.from({ length: 12 }, (_, i) => i + 1)
-    .map((m) => `<option value="${m}" ${Number(selectedMonth) === m ? "selected" : ""}>${escapeHtml(new Date(2000, m - 1, 1).toLocaleDateString("sl-SI", { month: "long" }))}</option>`)
-    .join("");
-}
-
 function filterHtml(collection) {
   const extra = collection === "incomes"
     ? `<label>Kategorija<select data-filter="category"><option value="">Vse</option>${visibleCategories(incomeCategories, filters.category).map((c) => option(c, filters.category)).join("")}</select></label><label>Vir<input data-filter="source" value="${escapeAttr(filters.source)}"></label>`
     : `<label>Kategorija<select data-filter="category"><option value="">Vse</option>${visibleCategories(expenseCategories, filters.category).map((c) => option(c, filters.category)).join("")}</select></label><label>Račun<input data-filter="account" value="${escapeAttr(filters.account)}"></label>`;
-  return `<div class="card"><div class="card-body filters">
-    <label>Mesec<select data-filter="month">${monthOptionsHtml(filters.month)}</select></label>
-    <label>Leto<input type="number" data-filter="year" value="${filters.year}"></label>
-    ${extra}
+  return `<div class="card"><div class="card-body filter-bar">
+    ${simpleMonthNav()}
+    <div class="filters">${extra}</div>
   </div></div>`;
 }
 
@@ -5151,8 +5144,11 @@ function simpleReviewCard() {
   </div></section>`;
 }
 
+// Month switching everywhere: arrows, plus a way back to the current month.
 function simpleMonthNav() {
-  return `<div class="simple-month-nav"><button type="button" class="icon-btn" data-simple-month="-1" aria-label="Prejšnji mesec">‹</button><strong>${escapeHtml(capitalize(monthLabel(filters.month, filters.year)))}</strong><button type="button" class="icon-btn" data-simple-month="1" aria-label="Naslednji mesec" ${isFutureMonth(nextMonthPeriod(Number(filters.month), Number(filters.year)).month, nextMonthPeriod(Number(filters.month), Number(filters.year)).year) ? "disabled" : ""}>›</button></div>`;
+  const isCurrent = Number(filters.month) === currentMonth && Number(filters.year) === currentYear;
+  const back = isCurrent ? "" : `<button type="button" class="month-nav-today" data-month-today>Ta mesec</button>`;
+  return `<div class="simple-month-nav"><button type="button" class="icon-btn" data-simple-month="-1" aria-label="Prejšnji mesec">‹</button><strong>${escapeHtml(capitalize(monthLabel(filters.month, filters.year)))}</strong><button type="button" class="icon-btn" data-simple-month="1" aria-label="Naslednji mesec" ${isFutureMonth(nextMonthPeriod(Number(filters.month), Number(filters.year)).month, nextMonthPeriod(Number(filters.month), Number(filters.year)).year) ? "disabled" : ""}>›</button>${back}</div>`;
 }
 
 function shiftFilterMonth(step) {
@@ -8772,6 +8768,11 @@ function bind() {
     render();
   }));
   document.querySelectorAll("[data-simple-month]").forEach((btn) => btn.addEventListener("click", () => shiftFilterMonth(Number(btn.dataset.simpleMonth))));
+  document.querySelectorAll("[data-month-today]").forEach((btn) => btn.addEventListener("click", () => {
+    filters.month = currentMonth;
+    filters.year = currentYear;
+    render();
+  }));
   document.querySelectorAll("[data-simple-mode]").forEach((btn) => btn.addEventListener("click", () => setSimpleMode(btn.dataset.simpleMode === "on")));
   document.querySelectorAll("[data-quick-entry-form]").forEach((form) => form.addEventListener("submit", (event) => {
     event.preventDefault();
